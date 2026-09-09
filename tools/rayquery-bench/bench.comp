@@ -1,0 +1,250 @@
+// Caustica rayQuery micro-benchmark kernel.
+//
+// Purpose: measure sustained rayQuery throughput on a real device with a
+// Minecraft-like acceleration structure (one BLAS per 16^3 section, two
+// geometries per BLAS: an opaque solid bucket and an alpha-tested cutout
+// bucket), so the "full path tracing vs hybrid raster+rayQuery" decision can be
+// made from measurements instead of guesses.
+//
+// The kernel is deliberately written so that traversal, not shading, dominates:
+// per-hit work is a UV fetch, one texture sample on cutout hits, and a few dozen
+// FLOPs. Every mode runs the same shading, so the modes are comparable to each
+// other; the absolute fps they imply is therefore an upper bound.
+//
+// Modes (push constant dims.z):
+//   0  primary only                       1 ray / pixel
+//   1  primary + opaque shadow            2 rays / pixel
+//   2  primary + candidate shadow         2 rays / pixel
+//   3  primary + candidate shadow + 1 bounce
+//   4  primary + candidate shadow + 2 bounces
+//
+// Coherence (push constant paramsF.w): 0 = perspective camera rays, 1 = uniform
+// random directions (the incoherent workload, i.e. what SER-style reordering
+// would have to cope with).
+//
+// Ray counts are accumulated per workgroup in shared memory and flushed with one
+// global atomic, so the reported MRays/s is exact rather than derived.
+
+#version 460
+#extension GL_EXT_ray_query : require
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform accelerationStructureEXT topLevelAS;
+layout(set = 0, binding = 1, rgba16f) uniform image2D outImage;
+layout(set = 0, binding = 2) uniform sampler2D alphaTex;
+layout(set = 0, binding = 3, std430) readonly buffer UvBuf { vec2 uv[]; } uvs;
+layout(set = 0, binding = 4, std430) buffer CountBuf { uint rayCount; } counter;
+
+layout(push_constant) uniform Push {
+    vec4  camPosTanX;   // xyz camera origin, w tan(halfFovX)
+    vec4  camRight;     // xyz right basis
+    vec4  camUp;        // xyz up basis
+    vec4  camFwdTanY;   // xyz forward basis, w tan(halfFovY)
+    vec4  paramsF;      // x spp, y maxBounces, z maxT, w coherence
+    vec4  sun;          // xyz sun direction, w intensity
+    uvec4 dims;         // x,y render size, z mode, w frameIndex
+    uvec4 extra;        // x trisPerSection, y cutoutTriOffset, z seedSalt, w reserved
+} pc;
+
+// Geometry indices inside every BLAS. The host builds geometry 0 from the solid
+// half of a section and geometry 1 from the cutout half.
+const uint GEOM_SOLID  = 0u;
+const uint GEOM_CUTOUT = 1u;
+
+const uint MODE_PRIMARY              = 0u;
+const uint MODE_SHADOW_OPAQUE        = 1u;
+const uint MODE_SHADOW_CANDIDATE     = 2u;
+const uint MODE_BOUNCE_1             = 3u;
+const uint MODE_BOUNCE_2             = 4u;
+
+const uint CULL_ALL = 0xFFu;
+const float ALPHA_CUTOFF = 0.5;
+const vec3 SKY_RADIANCE = vec3(0.35, 0.45, 0.60);
+const vec3 AMBIENT      = vec3(0.05, 0.05, 0.06);
+
+shared uint sRays;
+
+struct Hit {
+    bool  hit;
+    float t;
+    vec3  albedo;
+    vec3  normal;
+};
+
+uint pcgHash(uint v) {
+    uint s = v * 747796405u + 2891336453u;
+    uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
+    return (w >> 22u) ^ w;
+}
+
+float rnd(inout uint state) {
+    state = state * 747796405u + 2891336453u;
+    uint w = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return float((w >> 22u) ^ w) * (1.0 / 4294967296.0);
+}
+
+vec3 hashAlbedo(uint prim, uint instance) {
+    uint h = pcgHash(prim * 1973u ^ instance * 9277u);
+    return vec3(float(h & 255u), float((h >> 8u) & 255u), float((h >> 16u) & 255u))
+            * (1.0 / 255.0) * 0.8 + 0.1;
+}
+
+// Alpha test for the cutout bucket: interpolate this triangle's three corner UVs
+// (the same per-triangle corner-UV layout Caustica's terrain uses) and sample the
+// atlas. Returns true when the texel is opaque enough to be a real hit.
+bool cutoutOpaque(uint instance, uint prim, vec2 bary) {
+    uint localTri = pc.extra.y + prim;
+    uint base = instance * pc.extra.x + localTri;
+    vec2 uv = bary.x * uvs.uv[base * 3u + 0u]
+            + bary.y * uvs.uv[base * 3u + 1u]
+            + (1.0 - bary.x - bary.y) * uvs.uv[base * 3u + 2u];
+    return textureLod(alphaTex, uv, 0.0).a >= ALPHA_CUTOFF;
+}
+
+// Radiance query: accept the first candidate that survives the alpha test.
+Hit traceRadiance(vec3 ro, float tmin, vec3 rd, float tmax) {
+    Hit h;
+    h.hit = false;
+    h.t = -1.0;
+    h.albedo = vec3(1.0);
+    h.normal = -rd;
+
+    rayQueryEXT q;
+    rayQueryInitializeEXT(q, topLevelAS, gl_RayFlagsNoneEXT, CULL_ALL, ro, tmin, rd, tmax);
+    atomicAdd(sRays, 1u);
+
+    while (rayQueryProceedEXT(q)) {
+        if (rayQueryGetIntersectionGeometryIndexEXT(q, false) == GEOM_CUTOUT) {
+            uint instance = rayQueryGetIntersectionInstanceCustomIndexEXT(q, false);
+            uint prim     = rayQueryGetIntersectionPrimitiveIndexEXT(q, false);
+            vec2 bary     = rayQueryGetIntersectionBarycentricsEXT(q, false);
+            if (!cutoutOpaque(instance, prim, bary)) {
+                continue;   // reject: the rayQuery equivalent of IgnoreHit()
+            }
+        }
+        rayQueryConfirmIntersectionEXT(q);
+        break;
+    }
+
+    if (rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+        h.hit = true;
+        h.t = rayQueryGetIntersectionTEXT(q, true);
+        uint instance = rayQueryGetIntersectionInstanceCustomIndexEXT(q, true);
+        uint prim     = rayQueryGetIntersectionPrimitiveIndexEXT(q, true);
+        h.albedo = hashAlbedo(prim, instance);
+        bool frontFace = rayQueryGetIntersectionFrontFaceEXT(q, true);
+        h.normal = frontFace ? -rd : rd;
+    }
+    return h;
+}
+
+// Shadow query over candidates: solid geometry blocks, cutout geometry alpha-tests,
+// everything else is passed through. This is the shape a rayQuery port of
+// Caustica's any-hit transmittance logic has to take.
+float traceShadowCandidate(vec3 ro, vec3 rd, float tmax) {
+    rayQueryEXT q;
+    rayQueryInitializeEXT(q, topLevelAS, gl_RayFlagsNoneEXT, CULL_ALL, ro, 0.001, rd, tmax);
+    atomicAdd(sRays, 1u);
+
+    while (rayQueryProceedEXT(q)) {
+        if (rayQueryGetIntersectionGeometryIndexEXT(q, false) != GEOM_CUTOUT) {
+            return 0.0;
+        }
+        uint instance = rayQueryGetIntersectionInstanceCustomIndexEXT(q, false);
+        uint prim     = rayQueryGetIntersectionPrimitiveIndexEXT(q, false);
+        vec2 bary     = rayQueryGetIntersectionBarycentricsEXT(q, false);
+        if (cutoutOpaque(instance, prim, bary)) {
+            return 0.0;
+        }
+    }
+    return 1.0;
+}
+
+// Fast occlusion variant: force-opaque + terminate on first hit. Legal only when
+// the ray does not need cutout alpha tests or transmission, which is the common
+// case for a sun shadow ray in open terrain.
+float traceShadowOpaque(vec3 ro, vec3 rd, float tmax) {
+    rayQueryEXT q;
+    rayQueryInitializeEXT(q, topLevelAS,
+            gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+            CULL_ALL, ro, 0.001, rd, tmax);
+    atomicAdd(sRays, 1u);
+
+    while (rayQueryProceedEXT(q)) {
+    }
+    return rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionNoneEXT
+            ? 1.0 : 0.0;
+}
+
+void main() {
+    if (gl_LocalInvocationIndex == 0u) {
+        sRays = 0u;
+    }
+    barrier();
+
+    uvec2 size = pc.dims.xy;
+    uint  mode = pc.dims.z;
+    uvec2 pix  = gl_GlobalInvocationID.xy;
+
+    uint seed = pcgHash(pix.x * 1973u + pix.y * 9277u + pc.dims.w * 2654435761u
+            + pc.extra.z * 668265263u);
+
+    vec3 radiance = vec3(0.0);
+    bool inBounds = pix.x < size.x && pix.y < size.y;
+    if (inBounds) {
+        vec2 uv = (vec2(pix) + 0.5) / vec2(size);
+        vec2 ndc = uv * 2.0 - 1.0;
+
+        vec3 ro = pc.camPosTanX.xyz;
+        vec3 rd = normalize(pc.camFwdTanY.xyz
+                + pc.camRight.xyz * (ndc.x * pc.camPosTanX.w)
+                + pc.camUp.xyz * (-ndc.y * pc.camFwdTanY.w));
+        if (pc.paramsF.w > 0.5) {
+            rd = normalize(vec3(rnd(seed) * 2.0 - 1.0,
+                                rnd(seed) * 2.0 - 1.0,
+                                rnd(seed) * 2.0 - 1.0));
+        }
+
+        vec3 throughput = vec3(1.0);
+        vec3 sunDir = normalize(pc.sun.xyz);
+        float maxT = pc.paramsF.z;
+        int maxBounces = int(pc.paramsF.y);
+
+        for (int bounce = 0; bounce <= maxBounces; ++bounce) {
+            Hit h = traceRadiance(ro, 0.001, rd, maxT);
+            if (!h.hit) {
+                radiance += throughput * SKY_RADIANCE;
+                break;
+            }
+            radiance += throughput * h.albedo * AMBIENT;
+
+            if (mode != MODE_PRIMARY) {
+                float visibility = (mode == MODE_SHADOW_OPAQUE)
+                        ? traceShadowOpaque(ro + rd * h.t + h.normal * 0.005, sunDir, maxT)
+                        : traceShadowCandidate(ro + rd * h.t + h.normal * 0.005, sunDir, maxT);
+                radiance += throughput * h.albedo * visibility * pc.sun.w
+                        * max(dot(h.normal, sunDir), 0.0);
+            }
+
+            if (bounce == maxBounces) {
+                break;
+            }
+            throughput *= h.albedo;
+            ro = ro + rd * h.t + h.normal * 0.005;
+            vec3 perturbation = vec3(rnd(seed) * 2.0 - 1.0,
+                                     rnd(seed) * 2.0 - 1.0,
+                                     rnd(seed) * 2.0 - 1.0) * 0.6;
+            rd = normalize(h.normal + perturbation);
+        }
+    }
+
+    if (inBounds) {
+        imageStore(outImage, ivec2(pix), vec4(radiance, 1.0));
+    }
+
+    barrier();
+    if (gl_LocalInvocationIndex == 0u) {
+        atomicAdd(counter.rayCount, sRays);
+    }
+}
