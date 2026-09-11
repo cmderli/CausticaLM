@@ -65,6 +65,7 @@ import dev.comfyfluffy.caustica.rt.pipeline.RtDlssFg;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssRr;
 import dev.comfyfluffy.caustica.rt.overlay.RtWorldOverlay;
 import dev.comfyfluffy.caustica.rt.pipeline.RtHdrCompositePipeline;
+import dev.comfyfluffy.caustica.rt.pipeline.RtMotionBlurPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtSdrPresentPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtExposure;
 import dev.comfyfluffy.caustica.rt.pipeline.RtPipeline;
@@ -77,14 +78,14 @@ import java.nio.file.Path;
 import java.util.Objects;
 
 /**
- * On-screen composite. Each frame, ray-trace into a render-res storage image (+ guide buffers), use
- * DLSS Ray Reconstruction to denoise and upscale it to display res, write that into a storage-capable
- * copy of the world color, and copy the result back to the world target at the
+ * On-screen composite. Each frame, ray-trace into a render-res storage image (+ guide buffers), hand both
+ * to the reconstruction backend ({@link RtRecon}) to denoise and upscale to display res, write that into a
+ * storage-capable copy of the world color, and copy the result back to the world target at the
  * end-of-world seam. Gated by {@code -Dcaustica.rt=true}.
  *
- * <p>The path tracer and its guide buffers run at the configured render scale of display res with a per-frame
- * sub-pixel camera jitter; DLSS-RR ({@link RtDlssRr}) reconstructs the display-res image. With RR
- * disabled the trace runs at 1:1 and a linear blit stands in for the upscale (a raw, noisy reference).
+ * <p>The path tracer and its guide buffers run at whatever render scale the backend asks for, with a
+ * per-frame sub-pixel camera jitter. With no backend the trace runs at 1:1 and a linear blit stands in
+ * for the upscale (a raw, noisy reference).
  *
  * <p>Traces the extracted {@link RtTerrain} with perspective camera rays (camera matrices captured
  * each frame via {@link #captureFrame}); writes nothing until terrain is available.
@@ -122,6 +123,11 @@ public final class RtComposite {
     }
 
     private static final int WATER_ANCHOR_MASK = 4095;
+
+    // Relative view-distance difference at which a motion blur tap stops contributing. Wide enough that a
+    // slanted surface seen through a camera move stays one surface (its streak would otherwise be cut off),
+    // tight enough that a foreground object does not drag the background along with it.
+    private static final float MOTION_BLUR_DEPTH_TOLERANCE = 0.25f;
     // The versioned look package owns every photometric anchor and the sky geometry. Its sun illuminance is the
     // photometric solar constant at the top of the atmosphere; the shader's transmittance LUT brings that
     // to ~117,000 lux under a zenith sun and reddens/dims it through sunset, and because world.rmiss tints
@@ -174,6 +180,14 @@ public final class RtComposite {
     private int pushSlot;
     private RtDisplayPipeline displayPipeline;
     private RtBloomPipeline bloomPipeline;
+    private RtMotionBlurPipeline motionBlurPipeline;
+    // Scene-linear image the display mapper reads: rrOutput, or the motion-blurred copy of it when the
+    // motion blur option is on. Computed once per frame in recordFrame and used by both the bloom prefilter
+    // and the display pass, so the two never disagree about which image is being displayed.
+    private RtImage blurredScene;
+    // Which scene image the bloom prefilter and the display mapper are currently bound to. Changing it
+    // rewrites their descriptor sets, which is only safe once no in-flight frame still uses the old one.
+    private long boundSceneSource;
     // Atmosphere LUTs (transmittance + multiple scattering + this frame's sky view). Device-lifetime; the
     // two static tables are baked on the first frame that records the pass.
     private RtSkyLut skyLut;
@@ -236,16 +250,20 @@ public final class RtComposite {
     private final Matrix4f fgClipToPrev = new Matrix4f();
     private final Matrix4f fgPrevToClip = new Matrix4f();
     private final Matrix4f fgMatTmp = new Matrix4f();
-    // Guide buffers (first-hit attributes for DLSS-RR): normal+roughness, albedo, depth, motion,
-    // specular albedo, and reflection motion.
+    // Guide buffers (first-hit attributes consumed by the reconstruction backend): normal+roughness,
+    // albedo, depth, motion, specular albedo, and reflection motion.
     private RtImage gNormal;
     private RtImage gAlbedo;
     private RtImage gDepth;
     private RtImage gMotion;
     private RtImage gSpecAlbedo;
     private RtImage gSpecMotion;
-    // Display-res RT image the display mapper reads: DLSS-RR writes it (render -> display denoise+upscale), or a
-    // linear blit of `output` fills it when RR is off/unavailable (the no-RR reference / fallback).
+    // Radiance split by lobe with each lane's first-bounce hit distance in alpha. Written every frame and
+    // consumed only by a denoiser backend that reconstructs the two lobes separately.
+    private RtImage gDiffRadianceHitDist;
+    private RtImage gSpecRadianceHitDist;
+    // Display-res RT image the display mapper reads: the reconstruction backend writes it (render ->
+    // display denoise+upscale), or a linear blit of `output` fills it when no backend ran.
     private RtImage rrOutput;
     private final RtExposure exposure = new RtExposure();
 
@@ -254,16 +272,18 @@ public final class RtComposite {
     private int displayH = -1;
     private int renderW = -1;
     private int renderH = -1;
-    // What ensureOutput last sized the render/guide images for, so a quality change (or RR being
-    // toggled) at a fixed window size is noticed even though displayW/displayH didn't change.
-    private boolean renderSizeRrEnabled;
-    private int renderSizeRrQuality = Integer.MIN_VALUE;
+    // What ensureOutput last sized the render/guide images for: the active denoiser and upscaler plus
+    // their quality knob, so switching either (or the mode) rebuilds even though displayW/displayH did
+    // not change.
+    private int renderSizeKey = Integer.MIN_VALUE;
 
     // Motion-vector reprojection state: the previous frame's camera-relative view-projection and
     // camera position, read into the push constant each frame then advanced at frame end.
     private final Matrix4f mvPrevProjView = new Matrix4f();
     private final Matrix4f mvCurProjView = new Matrix4f();
     private final Matrix4f mvPushMatrix = new Matrix4f();
+    // Previous-frame world space -> this frame's, handed to a denoiser that reprojects in world space.
+    private final Matrix4f reconWorldPrevToWorld = new Matrix4f();
     private final Matrix4f frameInvViewProj = new Matrix4f();
     private final BlockPos.MutableBlockPos cameraBlockPos = new BlockPos.MutableBlockPos();
     private double mvPrevCamX;
@@ -594,6 +614,9 @@ public final class RtComposite {
             if (bloomPipeline == null) {
                 bloomPipeline = RtBloomPipeline.create(ctx);
             }
+            if (motionBlurPipeline == null) {
+                motionBlurPipeline = RtMotionBlurPipeline.create(ctx);
+            }
             if (skyLut == null) {
                 // Normally already created by ensureWorld before the pipeline exists at all; this only
                 // fires if render() somehow runs before the tick-driven ensureResourcesReady has, which
@@ -648,6 +671,9 @@ public final class RtComposite {
             // hdrToneLut/lookLut may have been hot-swapped just above; setImages is a no-op if the bound
             // views already match, so this is cheap on every other frame.
             RtToneLut boundLookLut = lookLut;
+            // rrOutput is bound here, but recordFrame re-binds the display pass and the bloom prefilter to
+            // the motion-blurred copy whenever the option is on; this keeps the descriptor sets valid even on
+            // a frame where recordFrame returns early (no world, a reload, a failure).
             displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
                     sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler(),
                     boundLookLut.view(), boundLookLut.sampler(), bloomLevels[0].view, bloomPipeline.sampler());
@@ -857,6 +883,8 @@ public final class RtComposite {
         worldPipeline.setExtraStorageImage(3, gMotion.view);
         worldPipeline.setExtraStorageImage(4, gSpecAlbedo.view);
         worldPipeline.setExtraStorageImage(5, gSpecMotion.view);
+        worldPipeline.setExtraStorageImage(6, gDiffRadianceHitDist.view);
+        worldPipeline.setExtraStorageImage(7, gSpecRadianceHitDist.view);
     }
 
     private void destroyGuideImages() {
@@ -884,6 +912,14 @@ public final class RtComposite {
             gSpecMotion.destroy();
             gSpecMotion = null;
         }
+        if (gDiffRadianceHitDist != null) {
+            gDiffRadianceHitDist.destroy();
+            gDiffRadianceHitDist = null;
+        }
+        if (gSpecRadianceHitDist != null) {
+            gSpecRadianceHitDist.destroy();
+            gSpecRadianceHitDist = null;
+        }
         if (rrOutput != null) {
             rrOutput.destroy();
             rrOutput = null;
@@ -893,14 +929,13 @@ public final class RtComposite {
     private void ensureOutput(RtContext ctx, int width, int height) {
         // Debug presentation is downstream of the ordinary frame graph and must not change the image
         // being inspected. In particular, toggling it must not rebuild at native resolution or disable
-        // the RR path whose render-resolution guide inputs the debug pass visualizes.
-        boolean rrEnabled = RtDlssRr.enabled();
-        int rrQuality = rrEnabled ? RtDlssRr.quality() : Integer.MIN_VALUE;
+        // the reconstruction path whose render-resolution guide inputs the debug pass visualizes.
+        int reconSizeKey = RtRecon.INSTANCE.renderSizeKey();
         if (output != null && continuationQueue != null
                 && displayImage != null && hdrDisplayImage != null && rrOutput != null
-                && bloomLevels.length > 0 && exposure.ready()
+                && blurredScene != null && bloomLevels.length > 0 && exposure.ready()
                 && displayW == width && displayH == height
-                && renderSizeRrEnabled == rrEnabled && renderSizeRrQuality == rrQuality) {
+                && renderSizeKey == reconSizeKey) {
             return;
         }
         ctx.waitIdle(); // resize is rare; no in-flight frame may use the old image/descriptor
@@ -910,6 +945,11 @@ public final class RtComposite {
         if (hdrDisplayImage != null) {
             hdrDisplayImage.destroy();
         }
+        if (blurredScene != null) {
+            blurredScene.destroy();
+            blurredScene = null;
+        }
+        boundSceneSource = 0;
         destroyBloomLevels();
         if (output != null) {
             output.destroy();
@@ -922,20 +962,19 @@ public final class RtComposite {
 
         displayW = width;
         displayH = height;
-        // The path tracer + its guide buffers run at render res; DLSS-RR (or a fallback blit) upscales
-        // to display res. With RR off there is no reconstruction pass, so trace at 1:1 for a faithful reference.
-        // With RR on, ask NGX what render resolution its chosen quality mode actually expects rather
-        // than assuming a fixed ratio: different quality modes (and driver versions) use different
-        // ratios, and DLSSD's own optimal-settings query is the source of truth for what it will accept.
-        int[] optimal = rrEnabled ? RtDlssRr.INSTANCE.queryOptimalRenderSize(width, height) : null;
-        renderW = optimal != null ? optimal[0] : width;
-        renderH = optimal != null ? optimal[1] : height;
-        renderSizeRrEnabled = rrEnabled;
-        renderSizeRrQuality = rrQuality;
+        // The path tracer + its guide buffers run at render res; the reconstruction backend denoises and
+        // upscales to display res. With no backend there is no reconstruction pass, so trace at 1:1 for a
+        // faithful reference. The backend owns the ratio: DLSS asks NGX what its chosen quality mode
+        // expects (different modes and driver versions use different ratios), the built-in denoiser
+        // derives it from its configured upscale setting.
+        int[] renderSize = RtRecon.INSTANCE.renderSize(width, height);
+        renderW = renderSize != null ? renderSize[0] : width;
+        renderH = renderSize != null ? renderSize[1] : height;
+        renderSizeKey = reconSizeKey;
 
-        // RT traces and DLSS-RR reconstruct scene-linear ACEScg in an HDR R16G16B16A16_SFLOAT target,
-        // so radiance > 1 and wide-gamut colour survive to the display seam. displayImage stays
-        // R8G8B8A8 to match the main target it is copied into
+        // RT traces and the reconstruction backend work in scene-linear ACEScg in an HDR
+        // R16G16B16A16_SFLOAT target, so radiance > 1 and wide-gamut colour survive to the display seam.
+        // displayImage stays R8G8B8A8 to match the main target it is copied into
         // (vkCmdCopyImage requires texel-size-compatible formats).
         output = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "trace color " + renderW + "x" + renderH);
         long pixelRecords = Math.multiplyExact((long) renderW, (long) renderH);
@@ -961,15 +1000,21 @@ public final class RtComposite {
             bloomWidth = Math.max(1, bloomWidth / 2);
             bloomHeight = Math.max(1, bloomHeight / 2);
         }
-        // Guide buffers match the trace (render) resolution; DLSS-RR consumes them at render res.
+        // Guide buffers match the trace (render) resolution; the reconstruction backend consumes them there.
         gNormal = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide normal roughness " + renderW + "x" + renderH);
         gAlbedo = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide diffuse albedo " + renderW + "x" + renderH);
-        gDepth = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R32_SFLOAT, "guide linear depth " + renderW + "x" + renderH);
+        gDepth = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R32_SFLOAT, "guide reversed-z depth " + renderW + "x" + renderH);
         gMotion = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide motion " + renderW + "x" + renderH);
         gSpecAlbedo = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide specular albedo " + renderW + "x" + renderH);
         gSpecMotion = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide specular motion " + renderW + "x" + renderH);
-        // Display-res RT image the display mapper reads. Always present (DLSS-RR target, or blit-upscale fallback).
-        rrOutput = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "DLSS-RR output " + width + "x" + height);
+        gDiffRadianceHitDist = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide diffuse radiance hit distance " + renderW + "x" + renderH);
+        gSpecRadianceHitDist = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide specular radiance hit distance " + renderW + "x" + renderH);
+        // Display-res RT image the display mapper reads. Always present (reconstruction target, or blit-upscale fallback).
+        rrOutput = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "reconstruction output " + width + "x" + height);
+        // Motion-blurred copy of rrOutput, written only on frames where the motion blur option is on. Always
+        // allocated so toggling the option never has to resize the frame graph mid-frame.
+        blurredScene = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                "motion blurred scene " + width + "x" + height);
         exposure.ensureResources(ctx);
 
         mvHasPrev = false; // recreated images -> first MV frame is zero
@@ -1039,12 +1084,13 @@ public final class RtComposite {
         int debugView = debugView();
         RtTerrain terrain = RtTerrain.currentOrNull();
         try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope frameLabel = RtDebugLabels.scope(ctx, cmd, "composite frame")) {
-            // RR drives the upscale: trace + jitter at render res, DLSS-RR denoises+upscales to display.
-            // A debug view observes this ordinary path; it never changes jitter or disables RR.
-            boolean rrPath = RtDlssRr.enabled();
+            // A reconstruction backend drives the upscale: trace + jitter at render res, the backend
+            // denoises and upscales to display res. A debug view observes this ordinary path; it never
+            // changes jitter or disables reconstruction.
+            boolean reconActive = RtRecon.INSTANCE.isActive();
             float jitterX = 0f;
             float jitterY = 0f;
-            if (rrPath) {
+            if (reconActive) {
                 CausticaJitter.INSTANCE.prepare(renderW, renderH, displayW);
                 jitterX = CausticaJitter.INSTANCE.jitterPixelsX() * jitterSignX();
                 jitterY = CausticaJitter.INSTANCE.jitterPixelsY() * jitterSignY();
@@ -1210,21 +1256,28 @@ public final class RtComposite {
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.traceIndirect")) {
                 active.trace(cmd, renderW, renderH, pushConstants, 1);
             }
-            VulkanCommandEncoder.memoryBarrier(cmd, stack); // RT writes visible to DLSS reads
-            // DLSS-RR denoise + upscale. The RT pass wrote noisy color (render res) + guides;
-            // RR reads them and writes the display-res denoised result straight into rrOutput.
-            if (rrPath && RtDlssRr.INSTANCE.ensureFeature(cmd.address(), renderW, renderH, displayW, displayH)) {
-                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "DLSS-RR evaluate");
-                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.dlssRr")) {
-                    rrDone = RtDlssRr.INSTANCE.evaluate(cmd.address(), output, gDepth, gMotion, gAlbedo,
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // RT writes visible to reconstruction reads
+            // Reconstruction: the RT pass wrote noisy color (render res) + guides; the active backend reads
+            // them and writes the display-res result straight into rrOutput. Jitter is passed in the ray's
+            // own convention (the value applied to the primary ray); translating it to a backend's sign
+            // convention is that backend's job.
+            if (reconActive && RtRecon.INSTANCE.ensure(cmd, renderW, renderH, displayW, displayH)) {
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "reconstruction");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.recon")) {
+                    // The world is camera-relative, so a point's previous-frame world position is its
+                    // current one plus the camera delta; NRD needs that mapping for its virtual-motion
+                    // reprojection and it cannot be recovered from the view matrices alone.
+                    reconWorldPrevToWorld.identity().translation(-mvCamDeltaX, -mvCamDeltaY, -mvCamDeltaZ);
+                    RtRecon.INSTANCE.setRadianceLanes(gDiffRadianceHitDist, gSpecRadianceHitDist);
+                    rrDone = RtRecon.INSTANCE.evaluate(cmd, output, gDepth, gMotion, gAlbedo,
                             gSpecAlbedo, gNormal, gSpecMotion, rrOutput, renderW, renderH, displayW, displayH,
-                            -jitterX, -jitterY, frameViewRotation, frameProjection);
+                            jitterX, jitterY, frameViewRotation, frameProjection, reconWorldPrevToWorld);
                 }
             }
 
-            // When DLSS-RR did not produce the display-res image (disabled or a runtime failure), bring
+            // When no backend produced the display-res image (disabled or a runtime failure), bring
             // the render-res trace up to display res with a linear blit so the display mapper and
-            // downstream debug pass always have a valid display-res scene image. With RR off
+            // downstream debug pass always have a valid display-res scene image. With no backend
             // render == display, so this is a 1:1 copy.
             if (!rrDone) {
                 VulkanCommandEncoder.memoryBarrier(cmd, stack);
@@ -1233,13 +1286,49 @@ public final class RtComposite {
                     blitUpscale(cmd, stack, output, rrOutput);
                 }
             }
-            VulkanCommandEncoder.memoryBarrier(cmd, stack); // rrOutput visible to exposure histogram
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // rrOutput + guides visible to everything below
 
-            // Auto-exposure meters rrOutput (the post-RR, denoised/converged image), not the raw
-            // pre-RR trace: RR has no notion of exposure (DLSS-RR Integration Guide §3.7 — ignore
-            // exposure/auto-exposure/sharpness entirely for RR), so this is purely our own metering
-            // choice, independent of RR's pipeline placement. Metering the noisy pre-RR buffer made
-            // the histogram's log-luminance average biased by Monte-Carlo noise (Jensen's inequality
+            // Motion blur integrates the finished display-res image along the traced motion vectors. It runs
+            // before the bloom prefilter and the display mapper, which both then read the blurred image: the
+            // bloom is a lens/sensor effect that happens after the exposure integration, and the ACES output
+            // transform must see the integrated radiance. Exposure metering below keeps reading the sharp
+            // rrOutput, so toggling the option cannot shift the auto-exposure.
+            //
+            // It must come after the barrier above: rrOutput was written by the reconstruction (or the
+            // fallback blit) earlier in this same command buffer, and a pass that samples an image without a
+            // preceding barrier is reading it while that write may still be in flight.
+            long sceneSource = rrOutput.view;
+            if (CausticaConfig.Rt.MotionBlur.active()) {
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "motion blur");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.motionBlur")) {
+                    motionBlurPipeline.setImages(rrOutput.view, gMotion.view, gDepth.view, blurredScene.view);
+                    motionBlurPipeline.dispatch(cmd, displayW, displayH,
+                            (float) displayW / (float) renderW, (float) displayH / (float) renderH,
+                            frameProjection.m22(), frameProjection.m32(),
+                            CausticaConfig.Rt.MotionBlur.shutterFraction(),
+                            CausticaConfig.Rt.MotionBlur.SAMPLES.value(),
+                            CausticaConfig.Rt.MotionBlur.MAX_RADIUS.value(), MOTION_BLUR_DEPTH_TOLERANCE);
+                    sceneSource = blurredScene.view;
+                }
+            }
+            // Bloom and the display mapper must both read whichever scene image is being displayed this
+            // frame. The two pipelines cache their bindings, so this is free while the choice is unchanged —
+            // and when it does change, no in-flight frame may still reference the old binding.
+            if (boundSceneSource != sceneSource) {
+                ctx.waitIdle();
+                boundSceneSource = sceneSource;
+            }
+            bloomPipeline.setImages(sceneSource, exposure.image().view, bloomLevels);
+            displayPipeline.setImages(displayImage.view, sceneSource, exposure.image().view,
+                    hdrDisplayImage.view, sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(),
+                    hdrToneLut.sampler(), lookLut.view(), lookLut.sampler(), bloomLevels[0].view,
+                    bloomPipeline.sampler());
+
+            // Auto-exposure meters rrOutput (the reconstructed, denoised/converged image), not the raw
+            // noisy trace: the reconstructor has no notion of exposure (DLSS-RR Integration Guide §3.7 —
+            // ignore exposure/auto-exposure/sharpness entirely for RR), so this is purely our own metering
+            // choice, independent of where reconstruction sits in the pipeline. Metering the noisy buffer
+            // made the histogram's log-luminance average biased by Monte-Carlo noise (Jensen's inequality
             // on the concave log()), so the computed exposure drifted with SPP; rrOutput is stable
             // regardless of SPP, keeping exposure consistent.
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "exposure");
@@ -1464,9 +1553,7 @@ public final class RtComposite {
         // Teardown runs after the device is idle (CLIENT_STOPPING waits), so the TLAS ring's slots are no
         // longer in flight and can be freed immediately.
         tlasRing.destroy();
-        if (RtDlssRr.enabled()) {
-            RtDlssRr.INSTANCE.destroy();
-        }
+        RtRecon.INSTANCE.destroy();
         if (displayImage != null) {
             displayImage.destroy();
             displayImage = null;
@@ -1498,6 +1585,14 @@ public final class RtComposite {
         if (displayPipeline != null) {
             displayPipeline.destroy();
             displayPipeline = null;
+        }
+        if (motionBlurPipeline != null) {
+            motionBlurPipeline.destroy();
+            motionBlurPipeline = null;
+        }
+        if (blurredScene != null) {
+            blurredScene.destroy();
+            blurredScene = null;
         }
         if (bloomPipeline != null) {
             bloomPipeline.destroy();

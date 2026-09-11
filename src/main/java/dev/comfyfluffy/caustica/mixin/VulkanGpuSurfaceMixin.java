@@ -12,6 +12,9 @@ import dev.comfyfluffy.caustica.rt.RtComposite;
 import dev.comfyfluffy.caustica.rt.RtDeviceBringup;
 import dev.comfyfluffy.caustica.rt.RtFramePresenter;
 import dev.comfyfluffy.caustica.rt.RtHdr;
+import dev.comfyfluffy.caustica.rt.RtHdrSwapchainFormat;
+import dev.comfyfluffy.caustica.rt.RtHdrSwapchainFormat.Decision;
+import dev.comfyfluffy.caustica.rt.RtHdrSwapchainFormat.Pair;
 import dev.comfyfluffy.caustica.rt.RtReflex;
 import it.unimi.dsi.fastutil.longs.LongList;
 import org.lwjgl.system.MemoryStack;
@@ -40,6 +43,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import java.nio.IntBuffer;
 import java.nio.LongBuffer;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * HDR capability logging and PQ swapchain selection.
@@ -47,10 +52,16 @@ import java.nio.LongBuffer;
  * <p>The {@link VulkanGpuSurface} constructor holds both the live {@code VkSurfaceKHR} and the physical
  * device, so we enumerate the surface's formats/color spaces there (once) for diagnostics.
  *
- * <p>When HDR is enabled and the surface advertises HDR10_ST2084 (paired with whatever pixel format the
- * surface offers for it), we steer Minecraft's swapchain to it. When HDR is disabled, configure selects
- * vanilla's native SDR pair. The options callback invalidates the surface configuration, so toggling HDR
- * reuses the same swapchain recreation path as resize.
+ * <p>When HDR is enabled and the surface advertises HDR10_ST2084, we steer Minecraft's swapchain to it.
+ * When HDR is disabled, configure selects vanilla's native SDR pair. The options callback invalidates the
+ * surface configuration, so toggling HDR reuses the same swapchain recreation path as resize.
+ *
+ * <p>The PQ pair is discovered once and then reused for this surface. Re-deriving it from the advertised
+ * pair list on every configure makes the swapchain oscillate whenever a driver or compositor reports the PQ
+ * pair only while the surface is not already in PQ: each recreation flips the decision, which makes the
+ * presentation stack mark the new swapchain suboptimal, which recreates it again. Only a failed
+ * {@code vkCreateSwapchainKHR} clears the cached pair, and that path retries the same creation in SDR, so a
+ * display that stops accepting PQ degrades to SDR instead of failing to present at all.
  */
 @Mixin(VulkanGpuSurface.class)
 public abstract class VulkanGpuSurfaceMixin {
@@ -102,6 +113,14 @@ public abstract class VulkanGpuSurfaceMixin {
 	@Unique
 	private int caustica$colorSpace = 0;
 
+	// Which (format,colorSpace) pair to present with, and the memory of what the surface advertised.
+	@Unique
+	private final RtHdrSwapchainFormat caustica$format = new RtHdrSwapchainFormat();
+
+	// Last decision that was logged, so the steady state (one configure per resize) stays quiet.
+	@Unique
+	private String caustica$loggedDecision;
+
 	@Unique
 	private long caustica$metadataSwapchain;
 
@@ -120,16 +139,18 @@ public abstract class VulkanGpuSurfaceMixin {
 	/** Discover PQ capability during construction and select PQ only when HDR starts enabled. */
 	@Inject(method = "pickSwapchainSurfaceFormat", at = @At("HEAD"), cancellable = true)
 	private void caustica$pickPqFormat(VkSurfaceFormatKHR.Buffer formats, CallbackInfoReturnable<VkSurfaceFormatKHR> cir) {
-		VkSurfaceFormatKHR pq = caustica$findPq(formats);
-		CausticaConfig.Rt.Hdr.setSwapchainPqAvailable(pq != null);
-		this.caustica$colorSpace = 0;
-		CausticaConfig.Rt.Hdr.setSwapchainPqActive(false);
-		if (CausticaConfig.Rt.Hdr.ENABLED.value() && pq != null) {
-			this.caustica$colorSpace = VK_COLOR_SPACE_HDR10_ST2084_EXT;
-			CausticaConfig.Rt.Hdr.setSwapchainPqActive(true);
-			CausticaMod.LOGGER.info("HDR: surface supports PQ (format={}, colorSpace=HDR10_ST2084); "
-					+ "creating the initial swapchain in PQ", pq.format());
-			cir.setReturnValue(pq);
+		caustica$observeFormats(formats);
+		Decision choice = caustica$decide();
+		if (!choice.pq()) {
+			return;
+		}
+		causticaMod$logDecision("creating the initial swapchain", choice);
+		for (int i = 0; i < formats.limit(); i++) {
+			VkSurfaceFormatKHR f = formats.get(i);
+			if (f.format() == choice.format() && f.colorSpace() == choice.colorSpace()) {
+				cir.setReturnValue(f);
+				return;
+			}
 		}
 	}
 
@@ -138,76 +159,86 @@ public abstract class VulkanGpuSurfaceMixin {
 	 * (format,colorSpace) pair at that same boundary so the HDR option can use the identical path without
 	 * recreating the window or Vulkan surface. Vanilla made swapchainImageFormat final because resize
 	 * normally keeps it fixed; the mixin marks that field mutable specifically for this re-selection.
+	 *
+	 * <p>The pair itself comes from {@link RtHdrSwapchainFormat}, which caches what the surface advertised
+	 * instead of re-deriving it per configure — see that class for why re-deriving it oscillates the
+	 * swapchain between HDR and SDR.
 	 */
 	@Inject(method = "configure", at = @At("HEAD"))
 	private void caustica$refreshFormatForConfigure(GpuSurface.Configuration config, CallbackInfo ci) {
+		if (caustica$format.pqFormat() == 0 || caustica$format.sdrFormat() == 0) {
+			caustica$enumerateFormats("configure");
+		}
+		Decision choice = caustica$decide();
+		if (choice.format() == 0) {
+			CausticaMod.LOGGER.warn("HDR: surface exposes no usable SDR or PQ format; keeping swapchain format {}",
+					this.swapchainImageFormat);
+			return;
+		}
+		this.swapchainImageFormat = choice.format();
+		this.caustica$colorSpace = choice.colorSpace();
+		causticaMod$logDecision("recreating swapchain", choice);
+	}
+
+	/** Applies this frame's decision to the HDR state the present path and the metadata hook read. */
+	@Unique
+	private Decision caustica$decide() {
+		Decision choice = caustica$format.decide(CausticaConfig.Rt.Hdr.ENABLED.value());
+		CausticaConfig.Rt.Hdr.setSwapchainPqAvailable(caustica$format.pqAdvertised());
+		CausticaConfig.Rt.Hdr.setSwapchainPqActive(choice.pq());
+		return choice;
+	}
+
+	/** Reads the surface's (format,colorSpace) list into the choice's cache; failures leave it as it was. */
+	@Unique
+	private void caustica$enumerateFormats(String reason) {
 		try (MemoryStack stack = MemoryStack.stackPush()) {
 			IntBuffer count = stack.callocInt(1);
 			int countResult = KHRSurface.vkGetPhysicalDeviceSurfaceFormatsKHR(
 					this.device.vkDevice().getPhysicalDevice(), this.surface, count, null);
 			if (countResult != VK10.VK_SUCCESS || count.get(0) <= 0) {
-				CausticaMod.LOGGER.warn("HDR: failed to enumerate swapchain formats during recreation: {}",
-						countResult);
+				CausticaMod.LOGGER.warn("HDR: failed to enumerate swapchain formats during {}: {}",
+						reason, countResult);
 				return;
 			}
 			VkSurfaceFormatKHR.Buffer formats = VkSurfaceFormatKHR.calloc(count.get(0), stack);
 			int formatsResult = KHRSurface.vkGetPhysicalDeviceSurfaceFormatsKHR(
 					this.device.vkDevice().getPhysicalDevice(), this.surface, count, formats);
 			if (formatsResult != VK10.VK_SUCCESS) {
-				CausticaMod.LOGGER.warn("HDR: failed to read swapchain formats during recreation: {}",
-						formatsResult);
+				CausticaMod.LOGGER.warn("HDR: failed to read swapchain formats during {}: {}",
+						reason, formatsResult);
 				return;
 			}
 			formats.limit(Math.min(formats.capacity(), count.get(0)));
-
-			VkSurfaceFormatKHR pq = caustica$findPq(formats);
-			VkSurfaceFormatKHR sdr = caustica$findSdr(formats);
-			CausticaConfig.Rt.Hdr.setSwapchainPqAvailable(pq != null);
-			boolean usePq = CausticaConfig.Rt.Hdr.ENABLED.value() && pq != null;
-			if (!usePq && sdr == null && pq != null) {
-				// Extremely unusual, but safer than destroying the only viable presentation path.
-				CausticaMod.LOGGER.warn("HDR: surface exposes PQ but no compatible native-SDR format; "
-						+ "keeping the PQ swapchain and embedding SDR content");
-				usePq = true;
-			}
-			if (usePq) {
-				this.swapchainImageFormat = pq.format();
-				this.caustica$colorSpace = VK_COLOR_SPACE_HDR10_ST2084_EXT;
-			} else {
-				if (sdr == null) {
-					CausticaMod.LOGGER.warn("HDR: surface exposes no compatible SDR or PQ format during recreation");
-					return;
-				}
-				this.swapchainImageFormat = sdr.format();
-				this.caustica$colorSpace = 0;
-			}
-			CausticaConfig.Rt.Hdr.setSwapchainPqActive(usePq);
-			CausticaMod.LOGGER.info("HDR: recreating swapchain as {} (format={}, colorSpace={})",
-					usePq ? "PQ" : "native SDR", this.swapchainImageFormat,
-					usePq ? "HDR10_ST2084" : "SRGB_NONLINEAR");
+			caustica$observeFormats(formats);
 		}
 	}
 
 	@Unique
-	private static VkSurfaceFormatKHR caustica$findPq(VkSurfaceFormatKHR.Buffer formats) {
-		for (int i = 0; i < formats.capacity(); i++) {
+	private void caustica$observeFormats(VkSurfaceFormatKHR.Buffer formats) {
+		List<Pair> advertised = new ArrayList<>(formats.limit());
+		for (int i = 0; i < formats.limit(); i++) {
 			VkSurfaceFormatKHR f = formats.get(i);
-			if (f.colorSpace() == VK_COLOR_SPACE_HDR10_ST2084_EXT) {
-				return f;
-			}
+			advertised.add(new Pair(f.format(), f.colorSpace()));
 		}
-		return null;
+		caustica$format.observe(advertised);
 	}
 
+	/** Logs a decided pair once per distinct decision plus HDR setting, so a steady state stays quiet. */
 	@Unique
-	private static VkSurfaceFormatKHR caustica$findSdr(VkSurfaceFormatKHR.Buffer formats) {
-		for (int i = 0; i < formats.capacity(); i++) {
-			VkSurfaceFormatKHR f = formats.get(i);
-			if (f.colorSpace() == 0 && (f.format() == 37 || f.format() == 44)) {
-				return f;
-			}
+	private void causticaMod$logDecision(String what, Decision choice) {
+		String description = (choice.pq()
+				? "PQ (format=" + choice.format() + ", colorSpace=HDR10_ST2084)"
+				: "native SDR (format=" + choice.format() + ", colorSpace="
+						+ (choice.colorSpace() == 0 ? "SRGB_NONLINEAR" : choice.colorSpace()) + ")")
+				+ " (hdr.enabled=" + CausticaConfig.Rt.Hdr.ENABLED.value() + ", ui="
+				+ CausticaConfig.Rt.Hdr.UI_NITS.value() + " nits, peak="
+				+ CausticaConfig.Rt.Hdr.PEAK_NITS.value() + " nits)";
+		if (description.equals(this.caustica$loggedDecision)) {
+			return;
 		}
-		return null;
+		this.caustica$loggedDecision = description;
+		CausticaMod.LOGGER.info("HDR: {} as {}", what, description);
 	}
 
 	/** Replace the hardcoded {@code imageColorSpace(0)} with the PQ color space when one was selected. */
@@ -229,6 +260,11 @@ public abstract class VulkanGpuSurfaceMixin {
 	 * doesn't retain the pointer afterward, so freeing it when this method's stack frame pops is safe even
 	 * though {@code pCreateInfo} isn't touched again after this point in {@code configure()}. No-op (calls
 	 * through unchanged) when Reflex isn't enabled + device-supported.
+	 *
+	 * <p>A rejected PQ swapchain is retried once in native SDR: the cached PQ pair is dropped first, so the
+	 * next configure picks SDR from the surface's own list, and this creation presents at all instead of
+	 * failing the frame. That is the only path that clears the cache, which is what keeps the PQ choice
+	 * stable when the presentation stack merely dislikes being asked twice.
 	 */
 	@Redirect(method = "configure",
 			at = @At(value = "INVOKE",
@@ -236,15 +272,41 @@ public abstract class VulkanGpuSurfaceMixin {
 	private int caustica$createSwapchainWithReflex(VkDevice device, VkSwapchainCreateInfoKHR pCreateInfo,
 			VkAllocationCallbacks pAllocator, LongBuffer pSwapchain) {
 		if (!RtDeviceBringup.reflexEnabled()) {
-			return KHRSwapchain.vkCreateSwapchainKHR(device, pCreateInfo, pAllocator, pSwapchain);
+			return caustica$createSwapchainWithRetry(device, pCreateInfo, pAllocator, pSwapchain);
 		}
+		// The latency struct is stack-allocated, so the chain it installs into pCreateInfo is only valid for
+		// the calls made while this frame is alive — including the SDR retry below, which reads the chain
+		// back to append its own struct.
 		try (MemoryStack stack = MemoryStack.stackPush()) {
 			VkSwapchainLatencyCreateInfoNV latency = VkSwapchainLatencyCreateInfoNV.calloc(stack).sType$Default();
 			latency.pNext(pCreateInfo.pNext());
 			latency.latencyModeEnable(true);
 			pCreateInfo.pNext(latency.address());
-			return KHRSwapchain.vkCreateSwapchainKHR(device, pCreateInfo, pAllocator, pSwapchain);
+			return caustica$createSwapchainWithRetry(device, pCreateInfo, pAllocator, pSwapchain);
 		}
+	}
+
+	/** Creates the swapchain, falling back to this surface's native SDR pair if a PQ creation is rejected. */
+	@Unique
+	private int caustica$createSwapchainWithRetry(VkDevice device, VkSwapchainCreateInfoKHR pCreateInfo,
+			VkAllocationCallbacks pAllocator, LongBuffer pSwapchain) {
+		int result = KHRSwapchain.vkCreateSwapchainKHR(device, pCreateInfo, pAllocator, pSwapchain);
+		if (result == VK10.VK_SUCCESS || this.caustica$colorSpace == 0) {
+			return result;
+		}
+		this.caustica$format.rejectPq();
+		Decision sdr = caustica$decide();
+		if (sdr.format() == 0) {
+			return result;
+		}
+		CausticaMod.LOGGER.warn("HDR: creating a PQ swapchain failed ({}); retrying the same creation as "
+				+ "native SDR (format={}) and leaving PQ off for this surface", result, sdr.format());
+		this.caustica$colorSpace = sdr.colorSpace();
+		this.caustica$loggedDecision = null;
+		this.swapchainImageFormat = sdr.format();
+		pCreateInfo.imageFormat(sdr.format());
+		pCreateInfo.imageColorSpace(sdr.colorSpace());
+		return KHRSwapchain.vkCreateSwapchainKHR(device, pCreateInfo, pAllocator, pSwapchain);
 	}
 
 	/**

@@ -43,8 +43,11 @@ public Reservoir resEmpty() {
 //     when the ray points from the light through the slab toward the camera (same as the sun SSS term).
 public float3 evalSampleContrib(float3 sp, float3 lnrm, float3 le, float area, float3 hitPos, float3 n,
                          float3 v, float3 rd, float3 diffAlb, float3 F0, float rough,
-                         bool twoSided, float sss, out float phat) {
+                         bool twoSided, float sss, out float phat, out float3 specular) {
     phat = 0.0;
+    // The specular half of `contrib`, in the same units. Callers that split the path into the lobes a
+    // denoiser reconstructs separately need it; the rest ignore it.
+    specular = float3(0.0);
     float3 toL = sp - hitPos;
     float dist2 = dot(toL, toL);
     if (dist2 < 1.0e-6) {
@@ -76,9 +79,13 @@ public float3 evalSampleContrib(float3 sp, float3 lnrm, float3 le, float area, f
             float D = ggxD(ndh, rough);
             float Gs = ggxG1(ndv, rough) * ggxG1(ndl, rough);
             float3 Fs = fresnelSchlick(vdh, F0);
-            brdf += (D * Gs) * Fs / (4.0 * ndv * ndl);
+            specular = (D * Gs) * Fs / (4.0 * ndv * ndl);
+            brdf += specular;
         }
-        contrib = brdf * le * (G * area);
+        // Scale both halves by the same transfer factors so the split stays exact: contrib == diffuse + specular.
+        float transfer = (G * area);
+        contrib = brdf * le * transfer;
+        specular = specular * le * transfer;
     } else if (sss > 0.0) {
         float backNdl = -ndl;
         float G = backNdl * cosL / dist2;
@@ -271,8 +278,9 @@ public Reservoir risInitial(float3 hitPos, float3 n, float3 v, float3 rd, float3
         float3 lightNormal = lightGeometricNormal(lg);
         float area = lightArea(lg);
         float phat;
+        float3 unusedSpecular;
         evalSampleContrib(sp, lightNormal, le, area, hitPos, n, v, rd,
-                diffAlb, F0, rough, twoSided, sss, phat);
+                diffAlb, F0, rough, twoSided, sss, phat, unusedSpecular);
         if (phat <= 0.0) {
             continue;
         }
@@ -296,13 +304,15 @@ public Reservoir risInitial(float3 hitPos, float3 n, float3 v, float3 rd, float3
 // the survivor (front BRDF, twoSided billboard, or SSS backscatter) — the origin is biased toward the
 // sample's side of the surface.
 public float3 shadeReservoir(Reservoir s, float3 hitPos, float3 n, float3 v, float3 rd, float3 diffAlb,
-                      float3 F0, float rough, bool twoSided, float sss) {
+                      float3 F0, float rough, bool twoSided, float sss, out float3 specular) {
+    specular = float3(0.0);
     if (s.W <= 0.0 || s.phat <= 0.0) {
         return float3(0.0, 0.0, 0.0);
     }
     float phat;
+    float3 rawSpecular;
     float3 contrib = evalSampleContrib(s.pos, s.lnrm, s.le, s.area, hitPos, n, v, rd,
-            diffAlb, F0, rough, twoSided, sss, phat);
+            diffAlb, F0, rough, twoSided, sss, phat, rawSpecular);
     if (phat <= 0.0) {
         return float3(0.0, 0.0, 0.0);
     }
@@ -317,6 +327,7 @@ public float3 shadeReservoir(Reservoir s, float3 hitPos, float3 n, float3 v, flo
     // Stop just short of the sample point so the ray doesn't self-occlude on the emitter's own face.
     VisibilityResult shadow = visibility(origin, toL / dist, dist * 0.999);
     float3 vis = shadow.transmittance;
+    specular = rawSpecular * vis * s.W;
     return contrib * vis * s.W;
 }
 

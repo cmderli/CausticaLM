@@ -3,6 +3,7 @@
 // complete Std430DataLayout: field types, byte offsets, total size, matrix mode, and array counts.
 import world_common;
 import display_common;
+import recon_common;
 
 struct WorldPushLayoutProbe {
     WorldPush values[2]; // array stride is the complete, tail-padded WorldPush byte size
@@ -92,5 +93,41 @@ void probePushAddr(uint3 id : SV_DispatchThreadID) {
 void probeBloomPush(uint3 id : SV_DispatchThreadID) {
     if (id.x == 0xFFFFFFFFu) {
         float sink = float(bloomPushProbe.mode) + bloomPushProbe.radius;
+    }
+}
+
+[[vk::push_constant]] MotionBlurPush motionBlurPushProbe;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void probeMotionBlurPush(uint3 id : SV_DispatchThreadID) {
+    if (id.x == 0xFFFFFFFFu) {
+        float sink = float(motionBlurPushProbe.samples) + motionBlurPushProbe.shutterFraction;
+    }
+}
+
+[[vk::push_constant]] DenoisePush denoisePushProbe;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void probeDenoisePush(uint3 id : SV_DispatchThreadID) {
+    if (id.x == 0xFFFFFFFFu) {
+        float sink = float(denoisePushProbe.step) + denoisePushProbe.depthSigma;
+    }
+}
+
+[[vk::push_constant]] NrdFrontendPush nrdFrontendPushProbe;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void probeNrdFrontendPush(uint3 id : SV_DispatchThreadID) {
+    if (id.x == 0xFFFFFFFFu) {
+        float sink = float(nrdFrontendPushProbe.width) + nrdFrontendPushProbe.hitDistA;
+    }
+}
+
+[[vk::push_constant]] NrdBackendPush nrdBackendPushProbe;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void probeNrdBackendPush(uint3 id : SV_DispatchThreadID) {
+    if (id.x == 0xFFFFFFFFu) {
+        float sink = float(nrdBackendPushProbe.height) + nrdBackendPushProbe.pad0;
     }
 }

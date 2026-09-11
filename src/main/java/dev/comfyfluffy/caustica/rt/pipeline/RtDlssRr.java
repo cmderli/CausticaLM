@@ -5,6 +5,7 @@ import com.mojang.blaze3d.vulkan.VulkanDevice;
 import dev.comfyfluffy.caustica.CausticaConfig;
 import dev.comfyfluffy.caustica.CausticaMod;
 import dev.comfyfluffy.caustica.rt.RtContext;
+import dev.comfyfluffy.caustica.rt.RtDeviceBringup;
 import dev.comfyfluffy.caustica.rt.accel.RtImage;
 import dev.comfyfluffy.caustica.mixin.GpuDeviceAccessor;
 import dev.comfyfluffy.caustica.ngx.NgxLibrary;
@@ -24,7 +25,7 @@ import java.lang.foreign.ValueLayout;
 public final class RtDlssRr {
     public static final RtDlssRr INSTANCE = new RtDlssRr();
     public static boolean enabled() {
-        return CausticaConfig.Rt.DlssRr.ENABLED.value();
+        return CausticaConfig.Rt.DlssRr.ENABLED.value() && RtDeviceBringup.ngxCapable();
     }
 
     // DLSS feature flags. IsHDR (bit 0): color is scene-linear ACEScg HDR (rgba16f) — RR requires it ("HDR Color
@@ -108,8 +109,10 @@ public final class RtDlssRr {
                         0L, 0L, 0,
                         out.view, out.image, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
                         renderWidth, renderHeight, displayWidth, displayHeight,
-                        // jitter in render pixels; MVs are already in render-pixel units, so MV scale = 1.
-                        jitterX, jitterY, 1.0f, 1.0f, resetHistory ? 1 : 0, frameMs,
+                        // NGX's jitter sign is opposite to the ray's: Vulkan's flipped clip space means the
+                        // offset applied to the primary ray's NDC is the negative of the jitter NGX expects.
+                        // MVs are already in render-pixel units, so both MV scales are 1.
+                        -jitterX, -jitterY, 1.0f, 1.0f, resetHistory ? 1 : 0, frameMs,
                         worldToViewMatrix, viewToClipMatrix);
             }
             resetHistory = false;
@@ -127,10 +130,10 @@ public final class RtDlssRr {
 
     /**
      * Asks NGX what render resolution the current quality mode expects for the given display size.
-     * Returns {@code null} only when RR is off (or already disabled from an earlier failure elsewhere)
-     * — in that state there is no feature to query and the caller should trace at full resolution.
-     * Once RR is active, a failed query (stale shim, old driver, bad NGX result) throws instead of
-     * silently falling back, so a broken render/display sync is never masked.
+     * Returns {@code null} when there is nothing to query — RR is off, a previous failure latched, or NGX
+     * cannot initialize here — and the caller then traces at full resolution. An NGX stack that
+     * initializes but answers a query badly still throws: that is a real render/display sync break, and
+     * silently tracing 1:1 would hide a feature that then resamples from the wrong input size.
      */
     public int[] queryOptimalRenderSize(int displayWidth, int displayHeight) {
         if (!enabled() || failed) {
@@ -139,7 +142,9 @@ public final class RtDlssRr {
         if (!(((GpuDeviceAccessor) RenderSystem.getDevice()).caustica$getBackend() instanceof VulkanDevice device)) {
             return null;
         }
-        ensureInitialized(device);
+        if (!ensureInitialized(device)) {
+            return null;
+        }
         if (!lib.hasQueryOptimalDlssd()) {
             throw new IllegalStateException("ngxshim is missing ngxshim_query_optimal_dlssd (stale native shim)");
         }
@@ -174,7 +179,9 @@ public final class RtDlssRr {
             return false;
         }
         try {
-            ensureInitialized(device);
+            if (!ensureInitialized(device)) {
+                return false;
+            }
             int quality = quality();
             int preset = renderPreset();
             if (featureRenderWidth != renderWidth || featureRenderHeight != renderHeight
@@ -206,15 +213,25 @@ public final class RtDlssRr {
         }
     }
 
-    private void ensureInitialized(VulkanDevice device) {
+    /**
+     * Bring NGX up for this device, returning false when DLSS-RR cannot run here. An unusable NGX is a
+     * property of the system, not a transient error, so it latches {@code failed} and stops the per-frame
+     * retries; the caller falls back to the non-DLSS reconstruction path. Never throws.
+     */
+    private boolean ensureInitialized(VulkanDevice device) {
         if (initialized) {
-            return;
+            return true;
+        }
+        if (failed) {
+            return false;
         }
         // NGX init/shutdown is owned by the shared NgxRuntime so RR and Frame Generation can coexist
         // (releasing the RR feature must not tear NGX down while FG still holds a handle).
         lib = NgxRuntime.INSTANCE.acquire(device);
         if (lib == null) {
-            throw new IllegalStateException("NGX runtime unavailable; DLSS-RR cannot initialize");
+            failed = true;
+            CausticaMod.LOGGER.warn("NGX runtime unavailable; DLSS-RR disabled on this system");
+            return false;
         }
         boolean available = lib.dlssdAvailable();
         if (!loggedAvailable) {
@@ -222,20 +239,26 @@ public final class RtDlssRr {
             CausticaMod.LOGGER.info("DLSS Ray Reconstruction available: {}", available);
         }
         if (!available) {
-            throw new IllegalStateException("DLSS Ray Reconstruction is not available on this system");
+            failed = true;
+            CausticaMod.LOGGER.warn("DLSS Ray Reconstruction is not available on this system");
+            return false;
         }
         initialized = true;
+        return true;
     }
 
     /**
      * Release the RR feature. Does NOT shut down NGX — that is the shared {@link NgxRuntime}'s job at device
      * teardown ({@code NgxRuntime.shutdown()} in {@code CausticaClient.shutdownRt}), so FG can keep using NGX.
+     * Clears the failure latch so a device recreated after teardown can initialize RR again.
      */
     public void destroy() {
         if (((GpuDeviceAccessor) RenderSystem.getDevice()).caustica$getBackend() instanceof VulkanDevice device) {
             releaseFeature(device);
         }
         initialized = false;
+        failed = false;
+        loggedAvailable = false;
         lib = null;
     }
 

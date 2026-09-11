@@ -133,13 +133,22 @@ public final class RtHdr {
             float maxFrameAverageLightLevel) {
     }
 
-    /** Logs the resolved HDR config once (cheap; safe to call repeatedly — guarded by the surface log). */
+    /**
+     * Logs the resolved HDR config once (cheap; safe to call repeatedly — guarded by the surface log). The
+     * three states are distinguished because they fail differently: the option can be on while this surface
+     * has no PQ pair to use, and PQ can be active while the option is off (SDR content in a PQ container).
+     */
     public static void logConfig() {
+        boolean requested = CausticaConfig.Rt.Hdr.ENABLED.value();
+        boolean pqActive = CausticaConfig.Rt.Hdr.swapchainPqActive();
+        String state = pqActive && requested ? "HDR display path active"
+                : pqActive ? "PQ swapchain, SDR content at paper white"
+                : requested ? "SDR swapchain (HDR requested but this surface exposes no usable PQ pair)"
+                : "SDR display path";
         CausticaMod.LOGGER.info(
-                "HDR config: enabled={} ui={}nits peak={}nits -> {}",
-                CausticaConfig.Rt.Hdr.enabled(),
-                CausticaConfig.Rt.Hdr.UI_NITS.value(), CausticaConfig.Rt.Hdr.PEAK_NITS.value(),
-                CausticaConfig.Rt.Hdr.enabled() ? "HDR display path active" : "SDR display path");
+                "HDR config: requested={} pqAvailable={} pqActive={} ui={}nits peak={}nits -> {}",
+                requested, CausticaConfig.Rt.Hdr.swapchainPqAvailable(), pqActive,
+                CausticaConfig.Rt.Hdr.UI_NITS.value(), CausticaConfig.Rt.Hdr.PEAK_NITS.value(), state);
     }
 
     /**

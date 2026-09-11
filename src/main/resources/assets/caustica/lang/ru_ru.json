@@ -27,22 +27,18 @@
 	"caustica.options.rt.waterWaves": "Анимированная вода",
 	"caustica.options.rt.waterWaves.tooltip": "Анимирует нормали поверхности воды для движущихся бликов волн.",
 
-	"caustica.options.rt.hdr": "Вывод HDR",
-	"caustica.options.rt.hdr.tooltip": "Отображает в HDR (ST.2084/PQ) вместо SDR, если дисплей поддерживает это. Вступает в силу после перезапуска игры.",
+	"caustica.options.rt.motionBlur": "Размытие в движении",
+	"caustica.options.rt.motionBlur.tooltip": "Размывает изображение вдоль реальных векторов движения каждого пикселя за время выдержки. Повороты камеры и движущиеся объекты оставляют шлейф, как при плёночном затворе; цена — один проход в разрешении экрана.",
+	"caustica.options.rt.motionBlurShutter": "Угол затвора",
+	"caustica.options.rt.motionBlurShutter.tooltip": "Какая часть интервала между кадрами виртуальный затвор остаётся открытым, в градусах: 180 — плёночный стандарт (половина интервала), 360 — открыт постоянно, 0 — отключает шлейф.",
+	"caustica.options.rt.motionBlurSamples": "Сэмплы размытия в движении",
+	"caustica.options.rt.motionBlurSamples.tooltip": "Число отсчётов, усредняемых вдоль шлейфа. Чем больше, тем плавнее быстрое движение; 8 — хорошее значение по умолчанию.",
 
-	"caustica.options.rt.hdrPaperWhite": "HDR Paper White",
-	"caustica.options.rt.hdrPaperWhite.tooltip": "Абсолютная яркость (в нитах), к которой сопоставляется SDR-эквивалентная яркость сцены на HDR-дисплее.",
+	"caustica.options.rt.hdr": "Вывод HDR",
+	"caustica.options.rt.hdr.tooltip": "Пересоздаёт цепочку обмена для вывода HDR (ST.2084/PQ) или обычного SDR. Применяется на границе следующего кадра.",
 
 	"caustica.options.rt.hdrPeak": "Пиковая яркость HDR",
 	"caustica.options.rt.hdrPeak.tooltip": "Абсолютная яркость (в нитах), к которой сходятся яркие участки. Установите пиковую HDR-яркость вашего дисплея.",
-
-	"caustica.options.rt.dlssQuality": "Качество DLSS",
-	"caustica.options.rt.dlssQuality.tooltip": "Режим качества DLSS Ray Reconstruction. Режимы более низкого качества рендерят меньше пикселей и агрессивнее масштабируют изображение для более высокой частоты кадров; режимы более высокого качества рендерят больше пикселей для более резкого изображения. Влияет на изображение только при включенном DLSS Ray Reconstruction.",
-	"caustica.options.rt.dlssQuality.3": "Ультра-производительность",
-	"caustica.options.rt.dlssQuality.0": "Производительность",
-	"caustica.options.rt.dlssQuality.1": "Баланс",
-	"caustica.options.rt.dlssQuality.2": "Качество",
-	"caustica.options.rt.dlssQuality.5": "DLAA",
 
 	"caustica.options.rt.debugView": "Отладочный вид",
 	"caustica.options.rt.debugView.tooltip": "Показывает промежуточный буфер трассировки лучей вместо финального изображения.",

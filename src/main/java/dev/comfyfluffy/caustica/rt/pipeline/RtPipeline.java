@@ -154,7 +154,9 @@ public final class RtPipeline {
             binds.get(WORLD_BLOCK_ALBEDO).binding(WORLD_BLOCK_ALBEDO)
                     .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                     .descriptorCount(1).stageFlags(atlasStages);
-            for (int binding = WORLD_G_NORMAL; binding <= WORLD_G_SPEC_MOTION; binding++) {
+            // Guide slots are contiguous from WORLD_G_NORMAL, which is what setExtraStorageImage's slot
+            // arithmetic relies on; the count comes from reflection so a new guide needs no edit here.
+            for (int binding = WORLD_G_NORMAL; binding < WORLD_G_NORMAL + WORLD_GUIDE_COUNT; binding++) {
                 binds.get(binding).binding(binding).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                         .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             }

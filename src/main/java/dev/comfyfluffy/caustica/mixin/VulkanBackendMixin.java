@@ -50,8 +50,14 @@ public abstract class VulkanBackendMixin {
 	private static final VulkanFeature STORAGE_IMAGE_WRITE_WITHOUT_FORMAT =
 			new VulkanFeature(VulkanBackend.VK10_FEATURES_STRUCT, "shaderStorageImageWriteWithoutFormat",
 					VkPhysicalDeviceFeatures.SHADERSTORAGEIMAGEWRITEWITHOUTFORMAT);
+	// NRD's embedded compute shaders declare their storage images with an unknown format in both directions,
+	// so its backend needs the read counterpart as well as the write one.
+	private static final VulkanFeature STORAGE_IMAGE_READ_WITHOUT_FORMAT =
+			new VulkanFeature(VulkanBackend.VK10_FEATURES_STRUCT, "shaderStorageImageReadWithoutFormat",
+					VkPhysicalDeviceFeatures.SHADERSTORAGEIMAGEREADWITHOUTFORMAT);
 	private static final List<VulkanFeature> SDK_SHADER_FEATURES = List.of(
 			STORAGE_IMAGE_WRITE_WITHOUT_FORMAT,
+			STORAGE_IMAGE_READ_WITHOUT_FORMAT,
 			new VulkanFeature(VulkanBackend.VK10_FEATURES_STRUCT, "shaderInt16", VkPhysicalDeviceFeatures.SHADERINT16),
 			new VulkanFeature(VulkanBackend.VK12_FEATURES_STRUCT, "shaderFloat16", VkPhysicalDeviceVulkan12Features.SHADERFLOAT16));
 
@@ -62,8 +68,8 @@ public abstract class VulkanBackendMixin {
 			// NGX (DLSS) — NVIDIA-only; skipped on other vendors. (The NGX instance
 			// extension VK_KHR_get_physical_device_properties2 needs an instance hook;
 			// DLSS relies on it being core/enabled at instance level.)
-			"VK_NVX_binary_import",
-			"VK_NVX_image_view_handle",
+			RtDeviceBringup.NGX_BINARY_IMPORT_EXTENSION,
+			RtDeviceBringup.NGX_IMAGE_VIEW_HANDLE_EXTENSION,
 			"VK_KHR_push_descriptor");
 
 	private static final Set<String> loggedMissingSdkFeatures = new HashSet<>();
@@ -166,6 +172,7 @@ public abstract class VulkanBackendMixin {
 			VulkanPhysicalDevice physicalDevice, Set<VulkanFeature> features,
 			CallbackInfoReturnable<VkDevice> cir, @Local VkDeviceCreateInfo deviceCreateInfo) {
 		RtDeviceBringup.reserveComputeQueue(deviceCreateInfo, physicalDevice, MemoryStack.stackGet());
+		RtDeviceBringup.chainDerivativesFeatures(deviceCreateInfo, MemoryStack.stackGet());
 		VulkanDiagnostics.attachNvDiagnosticsConfig(deviceCreateInfo, MemoryStack.stackGet());
 	}
 }

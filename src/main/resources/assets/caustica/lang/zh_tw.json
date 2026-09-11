@@ -27,22 +27,18 @@
 	"caustica.options.rt.waterWaves": "動態水面",
 	"caustica.options.rt.waterWaves.tooltip": "對水面法線進行動畫處理，以顯示移動波浪高光。",
 
-	"caustica.options.rt.hdr": "HDR 輸出",
-	"caustica.options.rt.hdr.tooltip": "當顯示器支援時，以 HDR (ST.2084/PQ) 而不是 SDR 顯示。重新啟動遊戲後生效。",
+	"caustica.options.rt.motionBlur": "動態模糊",
+	"caustica.options.rt.motionBlur.tooltip": "沿每個像素的真實運動向量，在快門時間內對畫面做積分模糊。相機轉動和移動物體會像底片快門一樣拖影；開銷為一個顯示解析度的運算通道。",
+	"caustica.options.rt.motionBlurShutter": "快門角度",
+	"caustica.options.rt.motionBlurShutter.tooltip": "虛擬快門在一個影格間隔內保持開啟的比例，單位為度：180 度是底片標準（半個影格間隔），360 度全程開啟，0 度關閉拖影。",
+	"caustica.options.rt.motionBlurSamples": "動態模糊取樣數",
+	"caustica.options.rt.motionBlurSamples.tooltip": "沿拖影方向平均的取樣點數。數值越高，快速運動越平滑；8 是合適的預設值。",
 
-	"caustica.options.rt.hdrPaperWhite": "HDR 紙白亮度",
-	"caustica.options.rt.hdrPaperWhite.tooltip": "SDR 等效場景亮度在 HDR 顯示器上映射到的絕對亮度（nits）。",
+	"caustica.options.rt.hdr": "HDR 輸出",
+	"caustica.options.rt.hdr.tooltip": "為 HDR (ST.2084/PQ) 或原生 SDR 輸出重建交換鏈。在下一個影格邊界生效。",
 
 	"caustica.options.rt.hdrPeak": "HDR 峰值亮度",
 	"caustica.options.rt.hdrPeak.tooltip": "高光回落目標的絕對亮度（nits）。請設為顯示器的 HDR 峰值亮度。",
-
-	"caustica.options.rt.dlssQuality": "DLSS 品質",
-	"caustica.options.rt.dlssQuality.tooltip": "DLSS Ray Reconstruction 品質模式。較低品質模式會算繪較少像素並進行更積極的升頻，以獲得更高幀率；較高品質模式會算繪更多像素，以獲得更清晰的影像。僅在啟用 DLSS Ray Reconstruction 時影響畫面。",
-	"caustica.options.rt.dlssQuality.3": "超高效能",
-	"caustica.options.rt.dlssQuality.0": "效能",
-	"caustica.options.rt.dlssQuality.1": "平衡",
-	"caustica.options.rt.dlssQuality.2": "品質",
-	"caustica.options.rt.dlssQuality.5": "DLAA",
 
 	"caustica.options.rt.debugView": "偵錯檢視",
 	"caustica.options.rt.debugView.tooltip": "顯示光線追蹤的中間緩衝區，而不是最終影像。",

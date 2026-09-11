@@ -27,22 +27,18 @@
 	"caustica.options.rt.waterWaves": "Eau animée",
 	"caustica.options.rt.waterWaves.tooltip": "Anime les normales de surface de l'eau pour des reflets de vagues en mouvement.",
 
-	"caustica.options.rt.hdr": "Sortie HDR",
-	"caustica.options.rt.hdr.tooltip": "Présente en HDR (ST.2084/PQ) au lieu du SDR lorsque l'écran le prend en charge. Prend effet après le redémarrage du jeu.",
+	"caustica.options.rt.motionBlur": "Flou de mouvement",
+	"caustica.options.rt.motionBlur.tooltip": "Floute l'image le long des vecteurs de mouvement réels de chaque pixel pendant la durée d'obturation. Les rotations de caméra et les objets en mouvement filent comme avec un obturateur argentique ; coût : une passe en résolution d'affichage.",
+	"caustica.options.rt.motionBlurShutter": "Angle d'obturateur",
+	"caustica.options.rt.motionBlurShutter.tooltip": "Part de l'intervalle entre deux images pendant laquelle l'obturateur virtuel reste ouvert, en degrés : 180 est la norme cinéma (la moitié de l'intervalle), 360 le garde ouvert en continu, 0 désactive le filé.",
+	"caustica.options.rt.motionBlurSamples": "Échantillons du flou de mouvement",
+	"caustica.options.rt.motionBlurSamples.tooltip": "Nombre d'échantillons moyennés le long du filé. Plus il y en a, plus les mouvements rapides sont lisses ; 8 est une bonne valeur par défaut.",
 
-	"caustica.options.rt.hdrPaperWhite": "Blanc papier HDR",
-	"caustica.options.rt.hdrPaperWhite.tooltip": "Luminosité absolue (en nits) vers laquelle la luminosité de scène équivalente SDR est mappée sur un écran HDR.",
+	"caustica.options.rt.hdr": "Sortie HDR",
+	"caustica.options.rt.hdr.tooltip": "Recrée la chaîne de présentation en HDR (ST.2084/PQ) ou en SDR natif. Appliqué à la prochaine limite d'image.",
 
 	"caustica.options.rt.hdrPeak": "Luminosité HDR maximale",
 	"caustica.options.rt.hdrPeak.tooltip": "Luminosité absolue (en nits) vers laquelle les hautes lumières s'atténuent. Réglez-la sur la luminosité HDR maximale de votre écran.",
-
-	"caustica.options.rt.dlssQuality": "Qualité DLSS",
-	"caustica.options.rt.dlssQuality.tooltip": "Mode de qualité de DLSS Ray Reconstruction. Les modes de qualité inférieure rendent moins de pixels et agrandissent l'image plus agressivement pour augmenter le nombre d'images par seconde ; les modes de qualité supérieure rendent plus de pixels pour une image plus nette. N'affecte l'image que lorsque DLSS Ray Reconstruction est activé.",
-	"caustica.options.rt.dlssQuality.3": "Ultra performance",
-	"caustica.options.rt.dlssQuality.0": "Performance",
-	"caustica.options.rt.dlssQuality.1": "Équilibré",
-	"caustica.options.rt.dlssQuality.2": "Qualité",
-	"caustica.options.rt.dlssQuality.5": "DLAA",
 
 	"caustica.options.rt.debugView": "Vue de débogage",
 	"caustica.options.rt.debugView.tooltip": "Visualise un tampon intermédiaire du lancer de rayons au lieu de l'image finale.",

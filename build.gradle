@@ -368,6 +368,47 @@ def bundleNgxNatives = tasks.register("bundleNgxNatives") {
 
 sourceSets.main.resources.srcDir(files(ngxNativeGenRoot).builtBy(bundleNgxNatives))
 
+// The NRD shim is built out of band by native/nrd_shim (see its README), so unlike the NGX natives it is
+// optional: a jar without it is still complete, and the NRD backend simply reports itself unavailable.
+// Native libraries cannot be loaded from inside a jar, so they are unpacked next to the game at runtime.
+def nrdNativeGenRoot = layout.buildDirectory.dir("generated/nrd-natives")
+def nrdShimOutDir = new File(layout.buildDirectory.dir("native/nrd_shim").get().asFile, ngxShimConfig)
+def currentNativePlatformDir = {
+	def os = org.gradle.internal.os.OperatingSystem.current()
+	def arch = System.getProperty("os.arch", "").toLowerCase(java.util.Locale.ROOT)
+	def x64 = arch == "x86_64" || arch == "amd64"
+	if (os.windows && x64) {
+		return "windows-x64"
+	}
+	if (os.linux && x64) {
+		return "linux-x64"
+	}
+	return os.name.toLowerCase(java.util.Locale.ROOT) + "/" + arch
+}
+def nrdShimIncludes = ["libcaustica_nrd.so", "caustica_nrd.dll"]
+def bundleNrdNatives = tasks.register("bundleNrdNatives") {
+	description = "Bundles a built NRD shim into the mod resources when one is present."
+	inputs.files(fileTree(nrdShimOutDir) { include nrdShimIncludes }).withPropertyName("nrdShim")
+	outputs.dir(nrdNativeGenRoot)
+	outputs.upToDateWhen { false }
+	doLast {
+		delete(nrdNativeGenRoot)
+		def platformDir = currentNativePlatformDir()
+		def found = fileTree(nrdShimOutDir) { include nrdShimIncludes }.files
+		if (found.empty) {
+			logger.lifecycle("NRD shim not built in ${nrdShimOutDir}; packaging without it (NRD stays unavailable)")
+			return
+		}
+		copy {
+			from found
+			into new File(nrdNativeGenRoot.get().asFile, "caustica/natives/${platformDir}")
+		}
+		logger.lifecycle("Bundled NRD shim for ${platformDir}: ${found*.name.join(', ')}")
+	}
+}
+
+sourceSets.main.resources.srcDir(files(nrdNativeGenRoot).builtBy(bundleNrdNatives))
+
 tasks.withType(JavaCompile).configureEach {
 	it.options.release = 25
 }

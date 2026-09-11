@@ -30,3 +30,33 @@ Bundled NVIDIA SDK runtime libraries may include files matching:
 
 Caustica's `ngxshim` native library is project-owned glue code and follows
 Caustica's project license unless otherwise noted.
+
+## NVIDIA Real-time Denoisers (NRD)
+
+Caustica can build and distribute release artifacts that include NVIDIA Real-time
+Denoisers, linked statically into the `caustica_nrd` shim together with its
+SPIR-V shader blobs. NRD is proprietary third-party software and is not licensed
+under the LGPL.
+
+NRD remains subject to the NVIDIA RTX SDKs license:
+
+<https://github.com/NVIDIA-RTX/NRD/blob/main/LICENSE.txt>
+
+The LGPL license grant for Caustica does not grant rights to NRD. Redistribution
+and use of NRD must comply with NVIDIA's license terms.
+
+This software contains source code provided by NVIDIA Corporation.
+
+The NRD sources are never part of this repository. The shim's build fetches them
+from NVIDIA's own distribution channel at configure time
+(`https://github.com/NVIDIA-RTX/NRD.git`, pinned to a release tag), and only the
+resulting object code is shipped. Bundled NRD runtime libraries may include files
+matching:
+
+- `caustica/natives/windows-x64/caustica_nrd.dll`
+- `caustica/natives/linux-x64/libcaustica_nrd.so`
+
+Caustica's `caustica_nrd` shim is project-owned glue code and follows Caustica's
+project license unless otherwise noted. Its host-side shader ports
+(`shaders/pipelines/nrd_frontend`, `shaders/pipelines/nrd_backend`) reimplement
+encoding helpers described in NRD's `NRD.hlsli` and carry the same notice.

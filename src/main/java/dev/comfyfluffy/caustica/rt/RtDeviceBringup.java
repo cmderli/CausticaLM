@@ -7,6 +7,7 @@ import com.mojang.blaze3d.vulkan.init.VulkanPNextStruct;
 import dev.comfyfluffy.caustica.CausticaConfig;
 import dev.comfyfluffy.caustica.CausticaMod;
 import org.lwjgl.system.MemoryStack;
+import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.VKCapabilitiesDevice;
 import org.lwjgl.vulkan.VK10;
 import org.lwjgl.vulkan.VK12;
@@ -112,7 +113,30 @@ public final class RtDeviceBringup {
     public static final List<String> REFLEX_EXTENSIONS = List.of(
             VK_NV_LOW_LATENCY_2_EXTENSION_NAME, VK_KHR_PRESENT_ID_EXTENSION_NAME);
 
+    /**
+     * The two NVX device extensions the NGX runtime needs on the device. Named here so the capability
+     * latch below and the device-extension request list in {@code VulkanBackendMixin} cannot drift apart
+     * on which extensions make a device NGX-capable.
+     */
+    public static final String NGX_BINARY_IMPORT_EXTENSION = "VK_NVX_binary_import";
+    public static final String NGX_IMAGE_VIEW_HANDLE_EXTENSION = "VK_NVX_image_view_handle";
+
+    /**
+     * NRD's REBLUR blur/history passes call {@code QuadReadAcrossX/Y} from compute shaders, which Vulkan
+     * only allows when this extension and its {@code computeDerivativeGroupQuads} feature are enabled. It
+     * is not core in 1.4, so the name has to be requested and the feature chained explicitly. RELAX needs
+     * neither.
+     */
+    public static final String NRD_DERIVATIVES_EXTENSION = "VK_KHR_compute_shader_derivatives";
+    // VkPhysicalDeviceComputeShaderDerivativesFeaturesKHR { sType, pNext, quads, linear }. Hand-laid out
+    // because this LWJGL build predates the extension and has no generated binding for it.
+    private static final int DERIVATIVES_FEATURES_S_TYPE = 1_000_201_000;
+    private static final int DERIVATIVES_FEATURES_BYTES = 24;
+    private static final int DERIVATIVES_QUADS_OFFSET = 16;
+
     private static volatile boolean rtRequested;
+    private static volatile boolean ngxCapable; // NVIDIA device advertising the NVX extensions NGX needs
+    private static volatile boolean nrdDerivativesCapable; // NRD_DERIVATIVES_EXTENSION enabled + supported
     private static volatile SerBackend serBackend = SerBackend.NONE;
     private static volatile boolean ommEnabled; // VK_EXT_opacity_micromap actually enabled on the device
     private static volatile boolean reflexEnabled; // VK_NV_low_latency2 actually enabled on the device
@@ -229,6 +253,28 @@ public final class RtDeviceBringup {
     /** True once we have augmented a device creation to request RT (extensions + features). */
     public static boolean rtRequested() {
         return rtRequested;
+    }
+
+    /**
+     * True when the selected device can host the NGX/DLSS runtime: NVIDIA silicon advertising both NVX
+     * extensions. Latched at device creation so every DLSS feature can be gated before it touches
+     * {@code NgxRuntime} — on a device that merely lacks them, NGX initialization fails inside the
+     * feature's first use, and a feature that lets that failure escape as an exception takes the whole RT
+     * composite down with it. The vendor check is not redundant with the extension check: a driver can
+     * advertise the NVX entry points without a usable NGX stack behind them, and NGX's own init is
+     * best-effort, so this only ever narrows what is attempted.
+     */
+    public static boolean ngxCapable() {
+        return ngxCapable;
+    }
+
+    /**
+     * True when the device was created with {@code VK_KHR_compute_shader_derivatives} and its quad
+     * derivative feature. NRD's REBLUR cannot run without it, so the NRD backend checks this before it
+     * touches the shim; RELAX would not need it.
+     */
+    public static boolean nrdDerivativesCapable() {
+        return nrdDerivativesCapable;
     }
 
     public static String worldRaygenShader() {
@@ -486,6 +532,16 @@ public final class RtDeviceBringup {
 
     /** Standalone path: add RT extension names to the (mutable) arg0 list. */
     public static void addExtensions(List<String> augmentedExtensions, VulkanPhysicalDevice physicalDevice) {
+        // Latched before the RT gates below: whether this device can host NGX has nothing to do with
+        // whether it can host ray tracing, and the DLSS features are gated on it either way.
+        ngxCapable = "NVIDIA".equals(physicalDevice.vendorName())
+                && physicalDevice.hasDeviceExtension(NGX_BINARY_IMPORT_EXTENSION)
+                && physicalDevice.hasDeviceExtension(NGX_IMAGE_VIEW_HANDLE_EXTENSION);
+        if (!ngxCapable) {
+            CausticaMod.LOGGER.info(
+                    "NGX unavailable on [{}]: needs an NVIDIA device exposing {} and {}; DLSS features stay disabled",
+                    physicalDevice.deviceName(), NGX_BINARY_IMPORT_EXTENSION, NGX_IMAGE_VIEW_HANDLE_EXTENSION);
+        }
         if (!enabledByProperty() || firstUnsupportedExtension(physicalDevice) != null) {
             return;
         }
@@ -497,6 +553,14 @@ public final class RtDeviceBringup {
             if (!augmentedExtensions.contains(ext)) {
                 augmentedExtensions.add(ext);
             }
+        }
+        // Requested, and the feature chained, only when the driver actually supports it: adding the name
+        // for an unsupported extension would fail vkCreateDevice.
+        nrdDerivativesCapable = physicalDevice.hasDeviceExtension(NRD_DERIVATIVES_EXTENSION)
+                && queryDerivativesSupport(physicalDevice);
+        if (nrdDerivativesCapable && !augmentedExtensions.contains(NRD_DERIVATIVES_EXTENSION)) {
+            augmentedExtensions.add(NRD_DERIVATIVES_EXTENSION);
+            CausticaMod.LOGGER.info("Enabling {} for the NRD denoiser", NRD_DERIVATIVES_EXTENSION);
         }
         String serExtension = support.serBackend.extensionName;
         if (serExtension != null && !augmentedExtensions.contains(serExtension)) {
@@ -676,6 +740,53 @@ public final class RtDeviceBringup {
         } catch (Throwable t) {
             // A probe must never break device creation.
             CausticaMod.LOGGER.error("RT probe threw; continuing without RT", t);
+        }
+    }
+
+    /** Reads {@code computeDerivativeGroupQuads} through a hand-built feature struct. */
+    private static boolean queryDerivativesSupport(VulkanPhysicalDevice physicalDevice) {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            long derivatives = stack.nmalloc(8, DERIVATIVES_FEATURES_BYTES);
+            MemoryUtil.memSet(derivatives, 0, DERIVATIVES_FEATURES_BYTES);
+            MemoryUtil.memPutInt(derivatives, DERIVATIVES_FEATURES_S_TYPE);
+            VkPhysicalDeviceFeatures2 query = VkPhysicalDeviceFeatures2.calloc(stack).sType$Default();
+            query.pNext(derivatives);
+            VK12.vkGetPhysicalDeviceFeatures2(physicalDevice.vkPhysicalDevice(), query);
+            return MemoryUtil.memGetInt(derivatives + DERIVATIVES_QUADS_OFFSET) != 0;
+        }
+    }
+
+    /**
+     * Append the compute-shader-derivatives feature struct to the device create info's pNext chain, which
+     * by then already carries vanilla's {@code VkPhysicalDeviceFeatures2}. This is done by hand rather than
+     * through vanilla's feature-set abstraction because this LWJGL build has no binding for the struct, and
+     * a hand-built chain is the only way to control its bytes exactly.
+     *
+     * <p>The tail is found by walking {@code pNext}, which every Vulkan struct exposes at offset 8, so the
+     * walk needs no knowledge of the struct types already in the chain. The struct lives on the caller's
+     * stack, which stays alive until {@code vkCreateDevice} returns.
+     */
+    public static void chainDerivativesFeatures(VkDeviceCreateInfo createInfo, MemoryStack stack) {
+        if (!nrdDerivativesCapable) {
+            return;
+        }
+        long struct = stack.nmalloc(8, DERIVATIVES_FEATURES_BYTES);
+        MemoryUtil.memSet(struct, 0, DERIVATIVES_FEATURES_BYTES);
+        MemoryUtil.memPutInt(struct, DERIVATIVES_FEATURES_S_TYPE);
+        MemoryUtil.memPutInt(struct + DERIVATIVES_QUADS_OFFSET, 1);
+
+        long node = createInfo.pNext();
+        if (node == 0L) {
+            createInfo.pNext(struct);
+            return;
+        }
+        while (true) {
+            long next = MemoryUtil.memGetLong(node + 8);
+            if (next == 0L) {
+                MemoryUtil.memPutLong(node + 8, struct);
+                return;
+            }
+            node = next;
         }
     }
 }

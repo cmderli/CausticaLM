@@ -40,6 +40,12 @@ public final class NgxRuntime {
 
     private static final PlatformNatives PLATFORM_NATIVES = PlatformNatives.current();
 
+    /**
+     * Stack for the NGX initialization thread. Comfortably above the ~1 MB NGX wants and the same size the
+     * project's own dev launch config uses for -Xss.
+     */
+    private static final long NGX_INIT_STACK_BYTES = 16L * 1024L * 1024L;
+
     private NgxLibrary lib;
     private boolean initialized;
     private boolean failed;
@@ -131,20 +137,50 @@ public final class NgxRuntime {
         }
 
         VkInstance instance = device.vkDevice().getPhysicalDevice().getInstance();
-        try (Arena arena = Arena.ofConfined()) {
-            long gdpa;
-            try (MemoryStack stack = MemoryStack.stackPush()) {
-                gdpa = VK10.vkGetInstanceProcAddr(instance, stack.ASCII("vkGetDeviceProcAddr"));
-            }
-            int rc = lib.init(0L, wideString(arena, dataPath.toString()),
-                    instance.address(), device.vkDevice().getPhysicalDevice().address(), device.vkDevice().address(),
-                    0L, gdpa, wideString(arena, nativesDir == null ? "" : nativesDir.toString()));
-            if (ngxFailed(rc)) {
-                throw new IllegalStateException("ngxshim_init failed: 0x" + Integer.toHexString(rc)
-                        + " last=0x" + Integer.toHexString(lib.lastResult()));
-            }
+        int rc = callInitOnDedicatedStack(dataPath, nativesDir, instance,
+                device.vkDevice().getPhysicalDevice().address(), device.vkDevice().address());
+        if (ngxFailed(rc)) {
+            throw new IllegalStateException("ngxshim_init failed: 0x" + Integer.toHexString(rc)
+                    + " last=0x" + Integer.toHexString(lib.lastResult()));
         }
         CausticaMod.LOGGER.info("NGX initialized (shim {})", shim);
+    }
+
+    /**
+     * Runs {@code ngxshim_init} on a thread with an oversized stack. NGX allocates about a megabyte on the
+     * stack while initializing, which is the same order as a JVM thread's default stack: called directly
+     * from the render thread the driver overruns its guard page and the process dies with a SIGSEGV inside
+     * NGX before any result can be returned. Initializing on a dedicated thread keeps that requirement out
+     * of the user's launcher arguments and turns any real failure back into an ordinary Java exception.
+     */
+    private int callInitOnDedicatedStack(Path dataPath, Path nativesDir, VkInstance instance,
+                                         long physicalDevice, long device) {
+        int[] result = new int[1];
+        Throwable[] failure = new Throwable[1];
+        Thread thread = new Thread(null, () -> {
+            try (Arena arena = Arena.ofConfined()) {
+                long getDeviceProcAddr;
+                try (MemoryStack stack = MemoryStack.stackPush()) {
+                    getDeviceProcAddr = VK10.vkGetInstanceProcAddr(instance, stack.ASCII("vkGetDeviceProcAddr"));
+                }
+                result[0] = lib.init(0L, wideString(arena, dataPath.toString()),
+                        instance.address(), physicalDevice, device,
+                        0L, getDeviceProcAddr, wideString(arena, nativesDir == null ? "" : nativesDir.toString()));
+            } catch (Throwable t) {
+                failure[0] = t;
+            }
+        }, "caustica-ngx-init", NGX_INIT_STACK_BYTES);
+        thread.start();
+        try {
+            thread.join();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while initializing NGX", e);
+        }
+        if (failure[0] != null) {
+            throw new IllegalStateException("NGX initialization failed", failure[0]);
+        }
+        return result[0];
     }
 
     private static Path locateShim() {

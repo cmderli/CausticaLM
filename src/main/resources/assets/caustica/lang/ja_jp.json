@@ -27,22 +27,18 @@
 	"caustica.options.rt.waterWaves": "アニメーションする水",
 	"caustica.options.rt.waterWaves.tooltip": "水面の法線をアニメーションさせ、動く波のハイライトを表示します。",
 
-	"caustica.options.rt.hdr": "HDR 出力",
-	"caustica.options.rt.hdr.tooltip": "ディスプレイが対応している場合、SDR ではなく HDR (ST.2084/PQ) で表示します。ゲームの再起動後に反映されます。",
+	"caustica.options.rt.motionBlur": "モーションブラー",
+	"caustica.options.rt.motionBlur.tooltip": "各ピクセルの実際のモーションベクターに沿って、シャッター時間ぶん画像をぼかします。カメラの回転や動く物体がフィルムのシャッターのように尾を引きます。コストは表示解像度のパス1回です。",
+	"caustica.options.rt.motionBlurShutter": "シャッター角度",
+	"caustica.options.rt.motionBlurShutter.tooltip": "仮想シャッターがフレーム間隔のうち開いている割合（度）。180 がフィルム標準（半分）、360 で常時開放、0 で尾を引かなくなります。",
+	"caustica.options.rt.motionBlurSamples": "モーションブラーのサンプル数",
+	"caustica.options.rt.motionBlurSamples.tooltip": "尾に沿って平均するサンプル数です。多いほど速い動きが滑らかになります。8 が適切な既定値です。",
 
-	"caustica.options.rt.hdrPaperWhite": "HDR ペーパーホワイト",
-	"caustica.options.rt.hdrPaperWhite.tooltip": "SDR 相当のシーン輝度を HDR ディスプレイ上で対応させる絶対輝度（nits）です。",
+	"caustica.options.rt.hdr": "HDR 出力",
+	"caustica.options.rt.hdr.tooltip": "HDR (ST.2084/PQ) またはネイティブ SDR 出力用にスワップチェーンを再作成します。次のフレーム境界で適用されます。",
 
 	"caustica.options.rt.hdrPeak": "HDR ピーク輝度",
 	"caustica.options.rt.hdrPeak.tooltip": "ハイライトがロールオフする先の絶対輝度（nits）です。ディスプレイの HDR ピーク輝度に設定してください。",
-
-	"caustica.options.rt.dlssQuality": "DLSS 品質",
-	"caustica.options.rt.dlssQuality.tooltip": "DLSS Ray Reconstruction の品質モード。低品質モードは少ないピクセルをレンダリングしてより強くアップスケールするためフレームレートが高くなり、高品質モードはより多くのピクセルをレンダリングして鮮明になります。DLSS Ray Reconstruction が有効な場合のみ画像に影響します。",
-	"caustica.options.rt.dlssQuality.3": "ウルトラパフォーマンス",
-	"caustica.options.rt.dlssQuality.0": "パフォーマンス",
-	"caustica.options.rt.dlssQuality.1": "バランス",
-	"caustica.options.rt.dlssQuality.2": "クオリティ",
-	"caustica.options.rt.dlssQuality.5": "DLAA",
 
 	"caustica.options.rt.debugView": "デバッグ表示",
 	"caustica.options.rt.debugView.tooltip": "最終画像の代わりに、レイトレーシングの中間バッファを可視化します。",

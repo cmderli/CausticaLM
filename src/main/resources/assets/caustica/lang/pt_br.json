@@ -27,22 +27,18 @@
 	"caustica.options.rt.waterWaves": "Água animada",
 	"caustica.options.rt.waterWaves.tooltip": "Anima as normais da superfície da água para brilhos de ondas em movimento.",
 
-	"caustica.options.rt.hdr": "Saída HDR",
-	"caustica.options.rt.hdr.tooltip": "Apresenta em HDR (ST.2084/PQ) em vez de SDR quando a tela oferece suporte. Entra em vigor após reiniciar o jogo.",
+	"caustica.options.rt.motionBlur": "Desfoque de movimento",
+	"caustica.options.rt.motionBlur.tooltip": "Desfoca a imagem ao longo dos vetores de movimento reais de cada pixel durante o intervalo do obturador. Giros de câmera e objetos em movimento deixam rastros como em um obturador de filme; o custo é uma passada na resolução da tela.",
+	"caustica.options.rt.motionBlurShutter": "Ângulo do obturador",
+	"caustica.options.rt.motionBlurShutter.tooltip": "Fração do intervalo entre quadros em que o obturador virtual permanece aberto, em graus: 180 é o padrão do cinema (metade do intervalo), 360 o mantém aberto o tempo todo e 0 desativa o rastro.",
+	"caustica.options.rt.motionBlurSamples": "Amostras do desfoque de movimento",
+	"caustica.options.rt.motionBlurSamples.tooltip": "Amostras calculadas ao longo do rastro. Quanto mais, mais suave fica o movimento rápido; 8 é um bom padrão.",
 
-	"caustica.options.rt.hdrPaperWhite": "Branco de papel HDR",
-	"caustica.options.rt.hdrPaperWhite.tooltip": "Brilho absoluto (em nits) ao qual o brilho da cena equivalente a SDR é mapeado em uma tela HDR.",
+	"caustica.options.rt.hdr": "Saída HDR",
+	"caustica.options.rt.hdr.tooltip": "Recria a swapchain para saída HDR (ST.2084/PQ) ou SDR nativa. Aplicado no próximo limite de quadro.",
 
 	"caustica.options.rt.hdrPeak": "Brilho máximo HDR",
 	"caustica.options.rt.hdrPeak.tooltip": "Brilho absoluto (em nits) para o qual os realces fazem roll-off. Defina para o brilho HDR máximo da sua tela.",
-
-	"caustica.options.rt.dlssQuality": "Qualidade DLSS",
-	"caustica.options.rt.dlssQuality.tooltip": "Modo de qualidade do DLSS Ray Reconstruction. Modos de menor qualidade renderizam menos pixels e fazem upscaling mais agressivo para obter taxas de quadros maiores; modos de maior qualidade renderizam mais pixels para uma imagem mais nítida. Só afeta a imagem quando o DLSS Ray Reconstruction está ativado.",
-	"caustica.options.rt.dlssQuality.3": "Ultra desempenho",
-	"caustica.options.rt.dlssQuality.0": "Desempenho",
-	"caustica.options.rt.dlssQuality.1": "Equilibrado",
-	"caustica.options.rt.dlssQuality.2": "Qualidade",
-	"caustica.options.rt.dlssQuality.5": "DLAA",
 
 	"caustica.options.rt.debugView": "Visualização de depuração",
 	"caustica.options.rt.debugView.tooltip": "Visualiza um buffer intermediário do traçado de raios em vez da imagem final.",

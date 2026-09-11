@@ -69,7 +69,7 @@ public final class RtFrameStats {
                     "frame.tracePrimary",
                     "frame.traceIndirect",
                     "frame.exposure",
-                    "frame.dlssRr",
+                    "frame.recon",
                     "frame.upscale",
                     "frame.bloom",
                     "frame.displayMap",

@@ -19,7 +19,7 @@ changes while the renderer is being built.
 ## Features
 
 - Vulkan hardware path-traced world rendering
-- DLSS Ray Reconstruction support
+- Vendor-neutral reconstruction: DLSS Ray Reconstruction on NVIDIA, a built-in denoiser elsewhere
 - DLSS Frame Generation support (experimental)
 - HDR output
 - Dynamic entity rendering in the ray-traced scene
@@ -34,6 +34,37 @@ changes while the renderer is being built.
 - HDR-capable display and OS HDR mode for HDR output
 - On Linux, an HDR-capable Wayland compositor and a native Wayland session for HDR output
 - Install LabPBR resource pack like [SPBR](https://modrinth.com/resourcepack/spbr) for better visuals
+
+Reconstruction is selectable in Video Settings. `auto` uses DLSS Ray Reconstruction where NGX can run,
+then the NRD denoiser when its native library is present, then the built-in denoiser. The built-in denoiser
+has no temporal history, so it is softer and noisier than the temporal denoisers at the same sample count.
+Turning reconstruction off traces at native resolution and shows the raw path-traced image.
+
+NRD (NVIDIA Real-time Denoisers) is a vendor-neutral compute denoiser used on devices that cannot run DLSS.
+It is reached through the `caustica_nrd` native shim, which is built from `native/nrd_shim` and is not part
+of the mod jar by default: build it, then put `libcaustica_nrd.so` (or `caustica_nrd.dll`) in `run/natives/`
+or point `-Dcaustica.nrd.path` at it. Without it the built-in denoiser is used instead. NRD is proprietary
+NVIDIA software; see `THIRD_PARTY_NOTICES.md`.
+
+The built-in denoiser and the NRD backend resolve to display resolution with a bilinear filter unless an
+AMD FidelityFX (FSR) Vulkan runtime is present, in which case the Super Resolution Method option can select
+it for temporal upscaling. `amd_fidelityfx_vk.dll` is the runtime on Windows; the FidelityFX SDK's Vulkan
+backend is a Windows build, so Linux has no `libamd_fidelityfx_vk.so` unless one is built from the SDK
+sources and placed in `run/natives/`, the game directory, or `-Dcaustica.fsr.path`. Without it the method
+falls back to bilinear and says so in the log.
+
+## Building
+
+```sh
+# Mod jar. NRD natives are bundled when native/nrd_shim has been built (see its README).
+./gradlew build -x bundleNgxNatives
+
+# Full build with the NVIDIA DLSS/NGX natives, needs the DLSS SDK:
+DLSS_SDK=/path/to/DLSS ./gradlew build
+```
+
+The jar lands in `build/libs/`. Skipping `bundleNgxNatives` only leaves the DLSS runtime out of the jar:
+DLSS features report themselves unavailable and reconstruction falls back to NRD or the built-in denoiser.
 
 ## Installation
 

@@ -31,6 +31,8 @@ abstract class GenerateRtBindings extends DefaultTask {
                     TLAS: "topLevelAS", OUTPUT: "outImage", BLOCK_ALBEDO: "blockAlbedoAtlas",
                     G_NORMAL: "gNormal", G_ALBEDO: "gAlbedo", G_DEPTH: "gDepth", G_MOTION: "gMotion",
                     G_SPEC_ALBEDO: "gSpecAlbedo", G_SPEC_MOTION: "gSpecMotion",
+                    G_DIFF_RADIANCE_HIT_DIST: "gDiffRadianceHitDist",
+                    G_SPEC_RADIANCE_HIT_DIST: "gSpecRadianceHitDist",
                     CELESTIALS: "celestialsAtlas", SKY_VIEW: "skyViewLut", TRANSMITTANCE: "transmittanceLut",
                     ENTITY_ALBEDO: "entityAlbedoTex", MATERIAL_SURFACE0: "materialSurface0Tex",
                     MATERIAL_NORMAL_AO: "materialNormalAoTex", MATERIAL_SURFACE1: "materialSurface1Tex"]],
@@ -45,8 +47,23 @@ abstract class GenerateRtBindings extends DefaultTask {
                     COLOR: "colorImage", BINS: "histBins", DEPTH: "depthImage", ALBEDO: "albedoImage"]],
             [prefix: "EXPOSURE_RESOLVE", source: "pipelines/exposure_resolve/main.comp.slang", resources: [
                     HIST_BINS: "histBins", IMAGE: "exposureImage", STATE: "stateBuf"]],
+            [prefix: "MOTION_BLUR", source: "pipelines/motion_blur/main.comp.slang", resources: [
+                    SOURCE: "sceneImage", MOTION: "gMotion", DEPTH: "gDepth", OUTPUT: "outputImage"]],
             [prefix: "BLOOM", source: "pipelines/bloom/main.comp.slang", resources: [
                     OUTPUT: "dstImage", SOURCE: "srcImage", EXPOSURE: "exposureImage"]],
+            [prefix: "DENOISE", source: "pipelines/denoise/main.comp.slang", resources: [
+                    SOURCE: "srcImage", OUTPUT: "dstImage", DEPTH: "gDepth", NORMAL: "gNormal",
+                    ALBEDO: "gAlbedo", SPEC_ALBEDO: "gSpecAlbedo"]],
+            [prefix: "NRD_FRONTEND", source: "pipelines/nrd_frontend/main.comp.slang", resources: [
+                    NORMAL: "gNormal", DEPTH: "gDepth", DIFF_IN: "inDiffRadianceHitDist",
+                    SPEC_IN: "inSpecRadianceHitDist", NORMAL_ROUGHNESS_OUT: "outNormalRoughness",
+                    VIEWZ_OUT: "outViewZ", DIFF_OUT: "outDiffRadianceHitDist",
+                    SPEC_OUT: "outSpecRadianceHitDist", ALBEDO: "gAlbedo", SPEC_ALBEDO: "gSpecAlbedo"]],
+            [prefix: "NRD_BACKEND", source: "pipelines/nrd_backend/main.comp.slang", resources: [
+                    DIFF_IN: "inDiffRadianceHitDist", SPEC_IN: "inSpecRadianceHitDist",
+                    RAW_DIFF: "rawDiffRadianceHitDist", RAW_SPEC: "rawSpecRadianceHitDist",
+                    NORMAL: "gNormal", DEPTH: "gDepth", OUTPUT: "outCombined",
+                    ALBEDO: "gAlbedo", SPEC_ALBEDO: "gSpecAlbedo"]],
             [prefix: "SKY_LUT", source: "pipelines/sky_lut/view.comp.slang", resources: [
                     TRANSMITTANCE_IMAGE: "transmittanceImage", MULTISCATTER_IMAGE: "multiScatterImage",
                     SKY_VIEW_IMAGE: "skyViewImage", TRANSMITTANCE_SAMPLER: "transmittanceLut",

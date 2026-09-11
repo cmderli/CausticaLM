@@ -34,8 +34,31 @@ import bindings;
 
 // Atmospheric transmittance LUT (RtSkyLut), also bound to world.rmiss at the same binding: raygen reads it
 // to colour the NEE sun/moonlight, the miss shader reads it to tint the visible discs and stars.
-public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
-    float3 L = float3(0.0, 0.0, 0.0);
+
+// Reported as a lane's hit distance when the ray escaped to sky. The renderer works in blocks and the
+// scene is bounded far below this, so it reads as "no hit" without being a special case downstream.
+public static const float SKY_HIT_DISTANCE = 1.0e5;
+// Radiance split by the lobe that produced it, plus each lane's first-bounce hit distance in blocks. A
+// path belongs to the lane of the FIRST lobe sampled at the primary vertex, because that is the lobe a
+// denoiser reconstructs; direct lighting at that vertex is evaluated for both lobes at once (one shadow
+// ray), so it is split by BRDF component instead. Adding the two lanes back together reproduces exactly
+// the combined radiance the display chain consumes when no denoiser asks for the split.
+public struct PathRadiance {
+    public float3 diffuse;
+    public float3 specular;
+    public float diffHitDist;
+    public float specHitDist;
+};
+
+public PathRadiance tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
+    float3 Ldiff = float3(0.0, 0.0, 0.0);
+    float3 Lspec = float3(0.0, 0.0, 0.0);
+    // -1 until the primary vertex picks a continuation lobe, then 0 diffuse / 1 specular for the rest of
+    // the path. Everything after that choice belongs to the chosen lane, including deeper bounces.
+    int lane = -1;
+    // Negative until the lane's own ray has been traced, so the first hit after the choice wins.
+    float diffHitDist = -1.0;
+    float specHitDist = -1.0;
     float3 ro = seg.ro;
     float3 rd = seg.rd;
     float3 throughput = seg.throughput;
@@ -89,6 +112,15 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                       showCelestial, rayConeWidth, rayConeSpread);
 #endif
 
+        // First hit along whichever lane the primary vertex chose: this trace is the ray that lobe
+        // generated, so its length is that lane's hit distance. A miss reports the sky sentinel, which a
+        // denoiser reads as "infinitely far" (maximum blur) rather than "close".
+        if (lane == 1 && specHitDist < 0.0) {
+            specHitDist = payload.hitT < 0.0 ? SKY_HIT_DISTANCE : payload.hitT;
+        } else if (lane == 0 && diffHitDist < 0.0) {
+            diffHitDist = payload.hitT < 0.0 ? SKY_HIT_DISTANCE : payload.hitT;
+        }
+
         if (payload.hitT < 0.0) {
             // A ray still in water should leave through a water interface. A miss instead means the
             // streamed/open volume has no known exit; do not reinterpret that unknown region as air
@@ -101,7 +133,13 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             // surface words as a full float3, so this is absolute scene units with nothing to undo. The
             // packed show-celestial flag decides whether this path segment may see the bright disc.
             float3 sky = payloadSky();
-            L += throughput * sky; // escaped to sky
+            // Escaped to sky. A camera ray that hit nothing is the background: no lobe chose it, so it
+            // belongs to the diffuse lane.
+            if (lane == 1) {
+                Lspec += throughput * sky;
+            } else {
+                Ldiff += throughput * sky;
+            }
             break;
         }
 
@@ -183,6 +221,11 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 }
             }
             showCelestial = true; // specular interface: the continuation ray may see the sun/moon disc
+            // A dielectric reflects or refracts, never scatters diffusely, so a primary ray that lands on
+            // one makes the whole path specular.
+            if (lane < 0) {
+                lane = 1;
+            }
             if (bounce >= rrStart) {
                 float q = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.02, 1.0);
                 if (rndf(seed) > q) {
@@ -198,6 +241,10 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         // path continuation into the scene, but never appear in shadows/reflections/GI or emit radiance.
         if (material == MATERIAL_PARTICLE) {
             float3 albedo = payloadAlbedo();
+            // Billboards are diffuse receivers.
+            if (lane < 0) {
+                lane = 0;
+            }
 
             float3 lightDir = celestialLight.dir;
             float lightHalfAngle = celestialLight.halfAngle;
@@ -213,7 +260,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 float3 shadowOrigin = hitPos + (signedNdl >= 0.0 ? n : -n) * SURF_BIAS;
                 float3 vis = visibility(shadowOrigin, lightDir, 10000.0).transmittance;
                 if (max(vis.r, max(vis.g, vis.b)) > 0.0) {
-                    L += throughput * albedo * INV_PI * celestialLight.illuminance * ndl * vis;
+                    Ldiff += throughput * albedo * INV_PI * celestialLight.illuminance * ndl * vis;
                 }
             }
 
@@ -224,8 +271,9 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 float3 v = -rd;
                 Reservoir r = risInitial(hitPos, n, v, rd, albedo, float3(0.0, 0.0, 0.0), 1.0,
                                          true, 0.0, seed, proposalSeed);
-                L += throughput * shadeReservoir(r, hitPos, n, v, rd, albedo, float3(0.0, 0.0, 0.0), 1.0,
-                                                 true, 0.0);
+                float3 unusedSpecular;
+                Ldiff += throughput * shadeReservoir(r, hitPos, n, v, rd, albedo, float3(0.0, 0.0, 0.0), 1.0,
+                                                     true, 0.0, unusedSpecular);
             }
 
             if (bounce >= maxBounces) {
@@ -271,7 +319,13 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         // RIS is skipped must also gather emission directly or that light is lost outright.
         bool gateEmitter = risOn && payloadEmitterInList();
         if (emission > 0.0 && (!gateEmitter || showCelestial)) {
-            L += throughput * albedo * emission;
+            // A surface's own emission is a diffuse-class signal at the primary vertex; deeper in the path
+            // it is simply radiance arriving through the lane already chosen.
+            if (lane == 1) {
+                Lspec += throughput * albedo * emission;
+            } else {
+                Ldiff += throughput * albedo * emission;
+            }
         }
 
         // NEE: direct light from the dominant celestial body (sun by day, moon by night) — Lambert
@@ -295,7 +349,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 vis *= waterCaustic(p + lightDir * shadow.waterHitT, lightDir, shadow.waterHitT);
             }
             if (max(vis.r, max(vis.g, vis.b)) > 0.0) {
-                float3 brdf = diffAlb * INV_PI; // Lambertian diffuse (f = albedo/PI)
+                float3 diffBrdf = diffAlb * INV_PI; // Lambertian diffuse (f = albedo/PI)
                 float3 h = normalize(lightDir + v);
                 float ndh = max(0.0, dot(n, h));
                 float ndv = max(1.0e-4, dot(n, v));
@@ -303,8 +357,18 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 float D = ggxD(ndh, rough);
                 float G = ggxG1(ndv, rough) * ggxG1(ndl, rough); // separable Smith masking
                 float3 F = fresnelSchlick(vdh, F0);
-                brdf += (D * G) * F / (4.0 * ndv * ndl); // Cook–Torrance specular
-                L += throughput * brdf * celestialLight.illuminance * ndl * vis;
+                float3 specBrdf = (D * G) * F / (4.0 * ndv * ndl); // Cook–Torrance specular
+                float3 direct = throughput * celestialLight.illuminance * ndl * vis;
+                // One shadow ray serves both lobes, so at the primary vertex the term is split by BRDF
+                // component; anywhere deeper the whole term belongs to the lane already chosen.
+                if (lane < 0) {
+                    Ldiff += direct * diffBrdf;
+                    Lspec += direct * specBrdf;
+                } else if (lane == 1) {
+                    Lspec += direct * (diffBrdf + specBrdf);
+                } else {
+                    Ldiff += direct * (diffBrdf + specBrdf);
+                }
             }
         }
 
@@ -317,8 +381,18 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             float activeSss = hitDepth <= MAX_SSS_INDIRECT_DEPTH ? sss : 0.0;
             Reservoir r = risInitial(hitPos, n, v, rd, diffAlb, F0, rough, false, activeSss,
                                      seed, proposalSeed);
-            L += throughput * shadeReservoir(r, hitPos, n, v, rd, diffAlb, F0, rough, false,
-                                             activeSss);
+            float3 risSpecular;
+            float3 risDiffuse = shadeReservoir(r, hitPos, n, v, rd, diffAlb, F0, rough, false,
+                                               activeSss, risSpecular);
+            float3 direct = throughput;
+            if (lane < 0) {
+                Ldiff += direct * risDiffuse;
+                Lspec += direct * risSpecular;
+            } else if (lane == 1) {
+                Lspec += direct * (risDiffuse + risSpecular);
+            } else {
+                Ldiff += direct * (risDiffuse + risSpecular);
+            }
         }
 
         // Thin-surface SSS transmission. Light entering from the back face scatters through toward the
@@ -339,7 +413,14 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 }
                 if (max(visB.r, max(visB.g, visB.b)) > 0.0) {
                     float cosT = dot(lightDir, rd);
-                    L += throughput * diffAlb * sss * SSS_STRENGTH * hg(cosT, SSS_G) * backNdl * celestialLight.illuminance * visB;
+                    // Forward-scatter transmission is diffuse-class energy.
+                    float3 transmission = throughput * diffAlb * sss * SSS_STRENGTH * hg(cosT, SSS_G)
+                            * backNdl * celestialLight.illuminance * visB;
+                    if (lane == 1) {
+                        Lspec += transmission;
+                    } else {
+                        Ldiff += transmission;
+                    }
                 }
             }
         }
@@ -377,12 +458,18 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             ro = p;
             rd = l;
             showCelestial = true; // specular lobe: this ray is a (glossy) mirror — show the disc
+            if (lane < 0) {
+                lane = 1;
+            }
         } else {
             throughput *= diffAlb / (1.0 - ps);
             ro = p;
             rd = cosineDir(n, seed);
             rayConeSpread = max(rayConeSpread, RAY_CONE_DIFFUSE_SPREAD);
             showCelestial = false; // diffuse lobe: disc covered by NEE, hide it (anti-firefly)
+            if (lane < 0) {
+                lane = 0;
+            }
         }
 
         // Russian roulette on deeper bounces: survive with prob = max channel, rescale survivors.
@@ -394,7 +481,15 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             throughput /= q;
         }
     }
-    return L;
+    PathRadiance result;
+    result.diffuse = Ldiff;
+    result.specular = Lspec;
+    // Negative when this sample never traced that lane (the other lobe was chosen, or the path ended at
+    // the primary vertex). The caller averages only over the samples that did trace it — dividing by the
+    // full sample count would bias both distances toward zero.
+    result.diffHitDist = diffHitDist;
+    result.specHitDist = specHitDist;
+    return result;
 }
 
 [shader("raygeneration")]
@@ -411,13 +506,30 @@ void main() {
     uint spp = max(worldPush.spp, 1u);
     uint pixelIndex = dispatchIndex.y * dimensions.x + dispatchIndex.x;
     ConstPtr<PackedPathSegment> queue = ConstPtr<PackedPathSegment>(pc.pathQueueAddr);
-    float3 frameRadiance = float3(0.0, 0.0, 0.0);
+    float3 frameDiffuse = float3(0.0, 0.0, 0.0);
+    float3 frameSpecular = float3(0.0, 0.0, 0.0);
+    float diffHitDistSum = 0.0;
+    float specHitDistSum = 0.0;
+    uint diffHitDistCount = 0u;
+    uint specHitDistCount = 0u;
     uint recordIndex = pixelIndex;
     for (uint leaf = 0u; leaf < MAX_PATH_SEGMENTS; ++leaf) {
         PackedPathSegment packed = queue[recordIndex];
         PathSegment segment = unpackPathSegment(packed);
         for (uint s = 0u; s < spp; ++s) {
-            frameRadiance += tracePath(segment, uint2(pix), s + leaf * spp);
+            PathRadiance radiance = tracePath(segment, uint2(pix), s + leaf * spp);
+            frameDiffuse += radiance.diffuse;
+            frameSpecular += radiance.specular;
+            // Averaged over the samples that actually traced the lane, not over every sample: a lane is
+            // only taken by the paths whose primary vertex sampled that lobe.
+            if (radiance.diffHitDist >= 0.0) {
+                diffHitDistSum += radiance.diffHitDist;
+                diffHitDistCount++;
+            }
+            if (radiance.specHitDist >= 0.0) {
+                specHitDistSum += radiance.specHitDist;
+                specHitDistCount++;
+            }
         }
         if (packed.nextRecord == PATH_NO_NEXT) {
             break;
@@ -427,10 +539,19 @@ void main() {
     // Pre-exposure is applied here and nowhere else: the entire path-traced result above is in absolute
     // scene units, and only the fp16 store is normalized.
     //
-    // outImage is rgba16f, so anything over 65504 would round to +inf and propagate as NaN
+    // The three outputs are rgba16f, so anything over 65504 would round to +inf and propagate as NaN
     // through the denoiser. Pre-exposed, it only bites when a pixel would render >65504x mid-grey — the
     // sun mid-transition, a firefly off a tiny emitter — and ACES 2.0 renders anything a few EV over
     // white as white, so it costs nothing visible.
-    float3 stored = frameRadiance * (worldPush.preExposure / float(spp));
-    outImage[pix] = float4(clamp(stored, float3(0.0), float3(HALF_MAX)), 1.0);
+    float scale = worldPush.preExposure / float(spp);
+    float3 storedDiffuse = frameDiffuse * scale;
+    float3 storedSpecular = frameSpecular * scale;
+    outImage[pix] = float4(clamp(storedDiffuse + storedSpecular, float3(0.0), float3(HALF_MAX)), 1.0);
+    // The split lanes, for a denoiser that reconstructs the lobes separately. Their alpha carries the
+    // lane's mean first-bounce hit distance in blocks; radiance is clamped for the same reason as above.
+    // A lane no sample took reports zero distance, which reads as "hit at the primary surface".
+    float diffHitDist = diffHitDistCount > 0u ? diffHitDistSum / float(diffHitDistCount) : 0.0;
+    float specHitDist = specHitDistCount > 0u ? specHitDistSum / float(specHitDistCount) : 0.0;
+    gDiffRadianceHitDist[pix] = float4(clamp(storedDiffuse, float3(0.0), float3(HALF_MAX)), diffHitDist);
+    gSpecRadianceHitDist[pix] = float4(clamp(storedSpecular, float3(0.0), float3(HALF_MAX)), specHitDist);
 }

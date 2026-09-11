@@ -6,6 +6,9 @@ import dev.comfyfluffy.caustica.CausticaConfig.BooleanSetting;
 import dev.comfyfluffy.caustica.CausticaConfig.FloatSetting;
 import dev.comfyfluffy.caustica.CausticaConfig.IntSetting;
 import dev.comfyfluffy.caustica.CausticaConfig.StringSetting;
+import dev.comfyfluffy.caustica.rt.RtDeviceBringup;
+import dev.comfyfluffy.caustica.rt.RtNrd;
+import dev.comfyfluffy.caustica.rt.RtRecon;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -49,7 +52,12 @@ public final class RtVideoOptions {
             entities(),
             particles(),
             waterWaves(),
-            dlssQuality()
+            denoiser(),
+            superResolutionMethod(),
+            superResolution(),
+            motionBlur(),
+            motionBlurShutter(),
+            motionBlurSamples()
         ));
         if (CausticaConfig.Rt.Hdr.swapchainPqAvailable()) {
             options.add(hdrEnabled());
@@ -135,18 +143,126 @@ public final class RtVideoOptions {
         return bool("caustica.options.rt.waterWaves", CausticaConfig.Rt.Composite.WATER_WAVES);
     }
 
-    private static OptionInstance<Integer> dlssQuality() {
-        IntSetting setting = CausticaConfig.Rt.DlssRr.QUALITY;
-        List<Integer> steps = CausticaConfig.Rt.DlssRr.QUALITY_STEPS;
-        int initialQuality = steps.contains(setting.value()) ? setting.value() : 0;
-        int initialPosition = steps.indexOf(initialQuality);
+    /**
+     * Which denoiser removes the path tracer's noise. Only the choices this machine can actually run are
+     * offered — the same reasoning as the HDR entries below: an option that can never take effect is worse
+     * than an absent one. "Auto" is always present and already resolves to the best available denoiser, so
+     * hiding an unavailable entry costs nothing.
+     */
+    private static OptionInstance<String> denoiser() {
+        StringSetting setting = CausticaConfig.Rt.Reconstruction.DENOISER;
+        List<String> values = new ArrayList<>();
+        values.add("auto");
+        if (RtDeviceBringup.ngxCapable()) {
+            values.add("dlss-rr");
+        }
+        if (RtNrd.INSTANCE.isAvailable()) {
+            values.add("nrd");
+        }
+        values.add("builtin");
+        values.add("off");
+        String initial = values.contains(setting.get()) ? setting.get() : "auto";
         return new OptionInstance<>(
-            "caustica.options.rt.dlssQuality",
-            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.dlssQuality.tooltip")),
+            "caustica.options.rt.denoiser",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.denoiser.tooltip")),
+            // CycleButton (used for Enum values) already prepends "caption: " itself (DisplayState.
+            // NAME_AND_VALUE), so this must return only the value's text, not caption + value again.
+            (caption, value) -> Component.translatable("caustica.options.rt.denoiser." + value),
+            new OptionInstance.Enum<>(values, Codec.STRING),
+            initial,
+            setting::set);
+    }
+
+    /**
+     * How the render-resolution result is scaled to the display: FSR's temporal upscaler, or the renderer's
+     * own bilinear resolve. Always offered, because "bilinear" is meaningful everywhere and "auto" adapts;
+     * picking FSR without its runtime present falls back to the resolve and says so in the log.
+     */
+    private static OptionInstance<String> superResolutionMethod() {
+        StringSetting setting = CausticaConfig.Rt.Reconstruction.UPSCALER;
+        return new OptionInstance<>(
+            "caustica.options.rt.superResolutionMethod",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("caustica.options.rt.superResolutionMethod.tooltip")),
+            // CycleButton (used for Enum values) already prepends "caption: " itself (DisplayState.
+            // NAME_AND_VALUE), so this must return only the value's text, not caption + value again.
+            (caption, value) -> Component.translatable("caustica.options.rt.superResolutionMethod." + value),
+            new OptionInstance.Enum<>(CausticaConfig.Rt.Reconstruction.UPSCALERS, Codec.STRING),
+            setting.get(),
+            setting::set);
+    }
+
+    /**
+     * NVSDK_NGX_PerfQuality_Value per super-resolution mode, in ladder order: native-aa (DLAA), quality,
+     * balanced, performance, ultra-performance. DLSS Ray Reconstruction only accepts Performance(0),
+     * Balanced(1), Quality(2), Ultra-Performance(3) and DLAA(5); Ultra Quality(4) is excluded because its
+     * optimal-settings query returns a zeroed render size.
+     */
+    private static final List<Integer> DLSS_BY_MODE = List.of(5, 2, 1, 0, 3);
+
+    /**
+     * Super-resolution mode: the render/display ratio the trace runs at. One control drives whichever
+     * backend currently owns the upscale — DLSS Ray Reconstruction stores its own quality values, the
+     * other backends share the FSR ladder — because the modes mean the same thing to the user either way.
+     */
+    private static OptionInstance<Integer> superResolution() {
+        List<Integer> modes = CausticaConfig.Rt.Reconstruction.QUALITY_STEPS;
+        boolean dlss = RtRecon.INSTANCE.superResolutionIsDlss();
+        int initialPosition = dlss
+                ? Math.max(DLSS_BY_MODE.indexOf(CausticaConfig.Rt.DlssRr.QUALITY.value()), 0)
+                : Math.max(modes.indexOf(CausticaConfig.Rt.Reconstruction.QUALITY.value()), 0);
+        return new OptionInstance<>(
+            "caustica.options.rt.superResolution",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.superResolution.tooltip")),
             (caption, position) -> Options.genericValueLabel(caption,
-                    Component.translatable("caustica.options.rt.dlssQuality." + steps.get(position))),
-            new OptionInstance.IntRange(0, steps.size() - 1),
+                    Component.translatable("caustica.options.rt.superResolution." + position)),
+            new OptionInstance.IntRange(0, modes.size() - 1),
             initialPosition,
+            position -> {
+                // Resolved when the value changes, not when the screen opened, so switching the denoiser
+                // above and then picking a mode writes to whichever backend is active by then.
+                if (RtRecon.INSTANCE.superResolutionIsDlss()) {
+                    CausticaConfig.Rt.DlssRr.QUALITY.set(DLSS_BY_MODE.get(position));
+                } else {
+                    CausticaConfig.Rt.Reconstruction.QUALITY.set(modes.get(position));
+                }
+            });
+    }
+
+    private static OptionInstance<Boolean> motionBlur() {
+        BooleanSetting setting = CausticaConfig.Rt.MotionBlur.ENABLED;
+        return OptionInstance.createBoolean(
+            "caustica.options.rt.motionBlur",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.motionBlur.tooltip")),
+            setting.value(),
+            setting::set);
+    }
+
+    // Film's shutter angle in degrees. 180 (the standard) keeps the virtual shutter open for half the frame
+    // interval, 360 for all of it, and 0 disables the streak without turning the option off.
+    private static OptionInstance<Integer> motionBlurShutter() {
+        IntSetting setting = CausticaConfig.Rt.MotionBlur.SHUTTER_ANGLE;
+        return new OptionInstance<>(
+            "caustica.options.rt.motionBlurShutter",
+            OptionInstance.cachedConstantTooltip(
+                Component.translatable("caustica.options.rt.motionBlurShutter.tooltip")),
+            (caption, degrees) -> Options.genericValueLabel(caption, Component.literal(degrees + "\u00b0")),
+            new OptionInstance.IntRange(0, 360),
+            Math.clamp(setting.value(), 0, 360),
+            setting::set);
+    }
+
+    private static OptionInstance<Integer> motionBlurSamples() {
+        IntSetting setting = CausticaConfig.Rt.MotionBlur.SAMPLES;
+        List<Integer> steps = CausticaConfig.Rt.MotionBlur.SAMPLE_STEPS;
+        int initial = steps.contains(setting.value()) ? steps.indexOf(setting.value()) : steps.indexOf(8);
+        return new OptionInstance<>(
+            "caustica.options.rt.motionBlurSamples",
+            OptionInstance.cachedConstantTooltip(
+                Component.translatable("caustica.options.rt.motionBlurSamples.tooltip")),
+            (caption, position) -> Options.genericValueLabel(caption, Component.literal(steps.get(position).toString())),
+            new OptionInstance.IntRange(0, steps.size() - 1),
+            Math.max(initial, 0),
             position -> setting.set(steps.get(position)));
     }
 

@@ -59,7 +59,8 @@ public final class CausticaConfig {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,
-            Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Ngx.PATH,
+            Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Rt.MotionBlur.ENABLED, Ngx.PATH, Fsr.PATH, Nrd.PATH,
+            Rt.Reconstruction.DENOISER,
         };
     }
 
@@ -97,15 +98,28 @@ public final class CausticaConfig {
                         + " Set ris-candidates to 0 to disable it. stats, dump, and dump-radius are debugging options.");
         FILE.setComment("tonemap",
                 " Controls the final image. gamma: 1 is neutral; lower values brighten midtones.");
+        FILE.setComment("motion-blur",
+                " Camera motion blur. shutter-angle is the virtual shutter in degrees (180 = film standard,\n"
+                        + " 0 disables the streak); samples are the taps averaged along it; max-radius caps the\n"
+                        + " streak length in display pixels.");
         FILE.setComment("exposure",
                 " Controls automatic exposure. manual-ev sets exposure in manual mode and adjusts it in auto mode.\n"
                         + " adapt-darken and adapt-brighten control adjustment speed in seconds.\n"
                         + " sky-weight-cap and emissive-weight-cap limit how much bright areas affect exposure.");
         FILE.setComment("hdr",
                 " HDR display output. Requires operating system and display support.\n"
-                        + " ui-nits controls UI brightness; peak-nits must be 500, 1000, 2000, or 4000.");
+                        + " ui-nits places SDR-authored UI in the PQ output (BT.2408 graphics white is 203; the\n"
+                        + " ACES HDR LUT puts a white surface in the world near 107 nits at a 1000 nit peak).\n"
+                        + " peak-nits must be 500, 1000, 2000, or 4000: it selects the baked ACES output LUT and is\n"
+                        + " the mastering peak + MaxCLL the swapchain metadata declares.");
         FILE.setComment("screenshots",
                 " exr-enabled saves an ACEScg EXR beside the normal F2 PNG while ray tracing is active.");
+        FILE.setComment("reconstruction",
+                " Denoising and super resolution for the ray-traced image.\n"
+                        + " denoiser is auto, dlss-rr, nrd, builtin, or off.\n"
+                        + " upscaler is auto, fsr, or bilinear (DLSS Ray Reconstruction upscales by itself).\n"
+                        + " quality is the super resolution mode: 0 native-aa, 1 quality, 2 balanced,\n"
+                        + " 3 performance, 4 ultra-performance.");
     }
 
     private static Path resolveConfigPath() {
@@ -652,6 +666,63 @@ public final class CausticaConfig {
             }
         }
 
+        /**
+         * Reconstruction is two independent choices: which denoiser removes the path tracer's noise, and
+         * how the denoised image reaches display resolution. The path tracer itself is vendor-neutral, so
+         * this is the only place a GPU vendor enters the decision.
+         */
+        public static final class Reconstruction {
+            /**
+             * The denoiser. {@code auto} prefers DLSS Ray Reconstruction where the device can host NGX,
+             * then NRD when its native shim is present, then the built-in filter chain; the explicit names
+             * force one for comparison, and {@code off} keeps the reference path — trace at 1:1 with no
+             * denoising at all.
+             */
+            public static final List<String> DENOISERS = List.of("auto", "dlss-rr", "nrd", "builtin", "off");
+            public static final StringSetting DENOISER =
+                    string("caustica.rt.reconstruction.denoiser", "reconstruction.denoiser", "auto",
+                            Reconstruction::sanitizeDenoiser);
+
+            /**
+             * How the render-resolution result is scaled to the display. DLSS Ray Reconstruction denoises
+             * and upscales in one feature, so it owns the upscale and this choice does not apply there.
+             * {@code auto} uses FSR when its runtime is present and the built-in resolve otherwise.
+             */
+            public static final List<String> UPSCALERS = List.of("auto", "fsr", "bilinear");
+            public static final StringSetting UPSCALER =
+                    string("caustica.rt.reconstruction.upscaler", "reconstruction.upscaler", "auto",
+                            Reconstruction::sanitizeUpscaler);
+
+            // Super-resolution mode ladder, in FfxApiUpscaleQualityMode order: native-aa (1.0x), quality
+            // (1.5x), balanced (1.7x), performance (2.0x), ultra-performance (3.0x). This is purely the
+            // render/display ratio; quality is the default because a path tracer trades resolution for
+            // samples far better than it trades noise for a stretched image.
+            public static final List<Integer> QUALITY_STEPS = List.of(0, 1, 2, 3, 4);
+            public static final IntSetting QUALITY =
+                    intChoice("caustica.rt.reconstruction.quality", "reconstruction.quality", 1, QUALITY_STEPS);
+
+            private Reconstruction() {
+            }
+
+            private static String sanitizeDenoiser(String value) {
+                for (String denoiser : DENOISERS) {
+                    if (denoiser.equalsIgnoreCase(value)) {
+                        return denoiser;
+                    }
+                }
+                return "auto";
+            }
+
+            private static String sanitizeUpscaler(String value) {
+                for (String upscaler : UPSCALERS) {
+                    if (upscaler.equalsIgnoreCase(value)) {
+                        return upscaler;
+                    }
+                }
+                return "auto";
+            }
+        }
+
         public static final class DlssRr {
             public static final BooleanSetting ENABLED = bool("caustica.rt.dlssRr", "dlss-rr.enabled", true);
             public static final IntSetting PRESET = intValue("caustica.rt.dlssRr.preset", "dlss-rr.preset", 0);
@@ -818,6 +889,48 @@ public final class CausticaConfig {
             }
         }
 
+        /**
+         * Camera motion blur. Integrates the display-resolution scene along each pixel's traced motion
+         * vector over the shutter interval, which is what makes a camera turn or a moving object streak
+         * instead of stepping. Costs one gather pass at display resolution; the trace, the denoisers and the
+         * exposure metering all stay untouched, so the option is purely an image-space addition and its
+         * streak length is the only thing the settings change.
+         */
+        public static final class MotionBlur {
+            public static final BooleanSetting ENABLED =
+                    bool("caustica.rt.motionBlur", "motion-blur.enabled", false);
+
+            // Film's shutter angle: 360 keeps the shutter open for the whole frame interval, 180 (the
+            // standard) for half of it, 0 disables the streak. Exposed in degrees because that is the
+            // physical quantity, and the shader only ever needs angle/360 as a fraction.
+            public static final IntSetting SHUTTER_ANGLE =
+                    clampedInt("caustica.rt.motionBlur.shutterAngle", "motion-blur.shutter-angle", 180, 0, 360);
+
+            // Taps averaged along the streak. Deterministic stratified positions, so raising this smooths
+            // the streak instead of adding noise to an already denoised image.
+            public static final List<Integer> SAMPLE_STEPS = List.of(4, 8, 16, 32);
+            public static final IntSetting SAMPLES =
+                    intChoice("caustica.rt.motionBlur.samples", "motion-blur.samples", 8, SAMPLE_STEPS);
+
+            // Longest streak in display pixels. A fast turn can otherwise smear a pixel across the whole
+            // screen, which both looks wrong and hides everything it crosses.
+            public static final IntSetting MAX_RADIUS =
+                    clampedInt("caustica.rt.motionBlur.maxRadius", "motion-blur.max-radius", 64, 8, 256);
+
+            /** Shutter angle as the fraction of the frame interval the virtual shutter stays open. */
+            public static float shutterFraction() {
+                return Math.clamp(SHUTTER_ANGLE.value(), 0, 360) / 360.0f;
+            }
+
+            /** Whether the pass should run and can change the image at all. */
+            public static boolean active() {
+                return ENABLED.value() && SHUTTER_ANGLE.value() > 0;
+            }
+
+            private MotionBlur() {
+            }
+        }
+
         /** Render-frame timing + hitch logging. See {@code RtFrameStats}. */
         public static final class FrameStats {
             public static final BooleanSetting ENABLED = bool("caustica.rt.frameStats", "frame-stats.enabled", false);
@@ -917,6 +1030,22 @@ public final class CausticaConfig {
         public static final OptionalStringSetting PATH = optionalString("caustica.ngx.path", "ngx.path");
 
         private Ngx() {
+        }
+    }
+
+    /** Overrides where the AMD FidelityFX (FSR) runtime is loaded from; unset means the usual search path. */
+    public static final class Fsr {
+        public static final OptionalStringSetting PATH = optionalString("caustica.fsr.path", "fsr.path");
+
+        private Fsr() {
+        }
+    }
+
+    /** Overrides where the NRD native shim is loaded from; unset means the copy bundled in the jar. */
+    public static final class Nrd {
+        public static final OptionalStringSetting PATH = optionalString("caustica.nrd.path", "nrd.path");
+
+        private Nrd() {
         }
     }
 

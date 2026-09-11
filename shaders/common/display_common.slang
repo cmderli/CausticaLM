@@ -79,6 +79,24 @@ public struct DisplayPush {
     public float bloomStrength;
 };
 
+// Display-resolution motion blur, applied to the reconstructed scene before the display transform.
+// Streaks come from the traced motion vectors, so the shutter interval is the only artistic quantity here.
+public struct MotionBlurPush {
+    public int displayWidth;
+    public int displayHeight;
+    public int samples;            // taps averaged along the streak, endpoints included
+    // Render-pixel motion -> display-pixel motion. The guides are render resolution while this pass runs at
+    // display resolution, so the velocity has to be scaled by each axis' ratio before it is used as a
+    // display-space pixel offset.
+    public float velocityScaleX;
+    public float velocityScaleY;
+    public float projM22;          // frame projection [2][2], for the reversed-Z depth guide
+    public float projM32;          // frame projection [3][2]
+    public float shutterFraction;  // 0 = closed (no streak), 1 = the whole frame interval
+    public float maxRadiusPixels;  // longest streak, in display pixels
+    public float depthTolerance;   // relative view-distance difference at which a tap stops contributing
+};
+
 public struct BloomPush {
     public int mode;            // 0 prefilter+downsample, 1 downsample, 2 tent upsample (accumulate)
     public float threshold;     // exposed scene-linear ACEScg luminance
