@@ -46,7 +46,8 @@ void main(uint3 id : SV_DispatchThreadID) {
 [numthreads(1, 1, 1)]
 void probeExposureHistPush(uint3 id : SV_DispatchThreadID) {
     if (id.x == 0xFFFFFFFFu) {
-        float sink = float(exposureHistPushProbe.stride);
+        float sink = float(exposureHistPushProbe.stride) + float(exposureHistPushProbe.focusBoxSize)
+                + float(exposureHistPushProbe.focusDiagnostic);
     }
 }
 
@@ -73,7 +74,9 @@ void probeDisplayPush(uint3 id : SV_DispatchThreadID) {
 [numthreads(1, 1, 1)]
 void probeDebugPresentPush(uint3 id : SV_DispatchThreadID) {
     if (id.x == 0xFFFFFFFFu) {
-        float sink = float(debugPresentPushProbe.debugView) + debugPresentPushProbe.centerWeightFloor;
+        float sink = float(debugPresentPushProbe.debugView) + debugPresentPushProbe.centerWeightFloor
+                + debugPresentPushProbe.sensorHeightMetres + debugPresentPushProbe.focusDistanceBlocks
+                + debugPresentPushProbe.lensRadiusBlocks;
     }
 }
 
@@ -102,6 +105,19 @@ void probeBloomPush(uint3 id : SV_DispatchThreadID) {
 void probeMotionBlurPush(uint3 id : SV_DispatchThreadID) {
     if (id.x == 0xFFFFFFFFu) {
         float sink = float(motionBlurPushProbe.samples) + motionBlurPushProbe.shutterFraction;
+    }
+}
+
+[[vk::push_constant]] DepthOfFieldPush depthOfFieldPushProbe;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void probeDepthOfFieldPush(uint3 id : SV_DispatchThreadID) {
+    if (id.x == 0xFFFFFFFFu) {
+        float sink = depthOfFieldPushProbe.targetRadiusPixels + depthOfFieldPushProbe.focusDistance
+                + depthOfFieldPushProbe.depthScale + depthOfFieldPushProbe.focalLength
+                + depthOfFieldPushProbe.displayToGather
+                + float(depthOfFieldPushProbe.tapCount) + float(depthOfFieldPushProbe.stage)
+                + float(depthOfFieldPushProbe.blurRadius);
     }
 }
 

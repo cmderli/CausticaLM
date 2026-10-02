@@ -58,27 +58,60 @@ public final class RtRecon {
     // frame from the composite because the guide images are recreated on resize.
     private RtImage gDiffLane;
     private RtImage gSpecLane;
+    // Last backend name reported to the log, so a resolved denoiser is announced once rather than every frame.
+    private static String lastResolution;
 
     private RtRecon() {
     }
 
     /**
-     * The denoiser this frame should use. Resolved from config on every call rather than cached, so a
-     * config edit takes effect on the next frame; each step is a config read plus a latched capability or
-     * failure check.
+     * The best denoiser this machine can actually run: the vendor feature that denoises and upscales in one
+     * pass, else the temporal denoiser, else the spatial filter chain that has no native dependency at all. A
+     * device that cannot host NGX never reaches DLSS_RR here, and a machine without the NRD shim never reaches
+     * NRD.
+     */
+    private Denoiser autoDenoiser() {
+        return RtDlssRr.enabled() ? Denoiser.DLSS_RR
+                : (nrd() ? Denoiser.NRD : (denoiseFailed ? Denoiser.OFF : Denoiser.BUILTIN));
+    }
+
+    /**
+     * What this frame's denoiser actually is, and whether the configured name had to be overridden.
+     *
+     * <p>A named denoiser that this machine cannot run resolves to the same ladder {@code auto} walks rather
+     * than to no denoising at all. Turning denoising off as the answer to "the denoiser you picked is not
+     * available" presents the raw path-traced image with no explanation, which reads as the renderer breaking
+     * rather than as a missing native library; the warning below is the explanation. Only an explicit
+     * {@code off} disables denoising.
      */
     public Denoiser denoiser() {
-        return switch (CausticaConfig.Rt.Reconstruction.DENOISER.get()) {
+        String configured = CausticaConfig.Rt.Reconstruction.DENOISER.get();
+        Denoiser resolved = switch (configured) {
             case "dlss-rr" -> RtDlssRr.enabled() ? Denoiser.DLSS_RR : Denoiser.OFF;
             case "nrd" -> nrd() ? Denoiser.NRD : Denoiser.OFF;
             case "builtin" -> denoiseFailed ? Denoiser.OFF : Denoiser.BUILTIN;
             case "off" -> Denoiser.OFF;
-            // auto: the vendor feature that denoises and upscales in one pass, else the temporal denoiser,
-            // else the spatial filter chain that has no native dependency at all. A device that cannot host
-            // NGX never reaches DLSS_RR here, and a machine without the NRD shim never reaches NRD.
-            default -> RtDlssRr.enabled() ? Denoiser.DLSS_RR
-                    : (nrd() ? Denoiser.NRD : (denoiseFailed ? Denoiser.OFF : Denoiser.BUILTIN));
+            default -> autoDenoiser();
         };
+        if (resolved == Denoiser.OFF && !"off".equals(configured)) {
+            Denoiser fallback = autoDenoiser();
+            logResolution(configured + "->" + fallback,
+                    "RT denoiser: '{}' cannot run on this machine, using {} instead", configured, fallback);
+            return fallback;
+        }
+        logResolution(resolved.name(), null, null, null);
+        return resolved;
+    }
+
+    /** Logs a backend change once, so a resolved name is visible without filling the log every frame. */
+    private static void logResolution(String key, String message, Object first, Object second) {
+        if (key.equals(lastResolution)) {
+            return;
+        }
+        lastResolution = key;
+        if (message != null) {
+            CausticaMod.LOGGER.warn(message, first, second);
+        }
     }
 
     private static boolean nrd() {

@@ -368,18 +368,36 @@ public final class RtNrd {
         }
     }
 
+    /**
+     * Which bundled shim this JVM loads. Android reports itself as Linux, so it is identified by its runtime
+     * before the OS name is consulted; the arm64 targets are built by {@code native/nrd_shim/build_cross.sh}
+     * and only differ in the platform directory they are staged under.
+     */
     private record PlatformNatives(String platformDir, String shimName) {
         private static PlatformNatives current() {
             String os = System.getProperty("os.name", "").toLowerCase();
             String arch = System.getProperty("os.arch", "").toLowerCase();
             boolean x64 = arch.equals("x86_64") || arch.equals("amd64");
+            boolean arm64 = arch.equals("aarch64") || arch.equals("arm64");
+            if (android()) {
+                return new PlatformNatives("android-arm64", "libcaustica_nrd.so");
+            }
             if (os.contains("win") && x64) {
                 return new PlatformNatives("windows-x64", "caustica_nrd.dll");
             }
             if (os.contains("linux") && x64) {
                 return new PlatformNatives("linux-x64", "libcaustica_nrd.so");
             }
+            if (os.contains("linux") && arm64) {
+                return new PlatformNatives("linux-arm64", "libcaustica_nrd.so");
+            }
             return new PlatformNatives(os + "/" + arch, System.mapLibraryName("caustica_nrd"));
+        }
+
+        private static boolean android() {
+            String vm = System.getProperty("java.vm.name", "").toLowerCase();
+            String runtime = System.getProperty("java.runtime.name", "").toLowerCase();
+            return vm.contains("dalvik") || runtime.contains("android");
         }
     }
 }

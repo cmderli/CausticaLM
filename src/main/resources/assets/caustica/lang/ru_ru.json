@@ -3,7 +3,9 @@
 
 	"caustica.options.rt.exposureMode": "Экспозиция",
 	"caustica.options.rt.exposureMode.tooltip": "Как изображение с трассировкой лучей сопоставляется с яркостью дисплея. Авто адаптируется к яркости сцены; Вручную использует значение экспозиции напрямую.",
+
 	"caustica.options.rt.exposureMode.auto": "Авто",
+
 	"caustica.options.rt.exposureMode.manual": "Вручную",
 
 	"caustica.options.rt.manualEv": "Экспозиция EV",
@@ -29,8 +31,10 @@
 
 	"caustica.options.rt.motionBlur": "Размытие в движении",
 	"caustica.options.rt.motionBlur.tooltip": "Размывает изображение вдоль реальных векторов движения каждого пикселя за время выдержки. Повороты камеры и движущиеся объекты оставляют шлейф, как при плёночном затворе; цена — один проход в разрешении экрана.",
+
 	"caustica.options.rt.motionBlurShutter": "Угол затвора",
 	"caustica.options.rt.motionBlurShutter.tooltip": "Какая часть интервала между кадрами виртуальный затвор остаётся открытым, в градусах: 180 — плёночный стандарт (половина интервала), 360 — открыт постоянно, 0 — отключает шлейф.",
+
 	"caustica.options.rt.motionBlurSamples": "Сэмплы размытия в движении",
 	"caustica.options.rt.motionBlurSamples.tooltip": "Число отсчётов, усредняемых вдоль шлейфа. Чем больше, тем плавнее быстрое движение; 8 — хорошее значение по умолчанию.",
 
@@ -41,13 +45,126 @@
 	"caustica.options.rt.hdrPeak.tooltip": "Абсолютная яркость (в нитах), к которой сходятся яркие участки. Установите пиковую HDR-яркость вашего дисплея.",
 
 	"caustica.options.rt.debugView": "Отладочный вид",
-	"caustica.options.rt.debugView.tooltip": "Показывает промежуточный буфер трассировки лучей вместо финального изображения.",
+	"caustica.options.rt.debugView.tooltip": "Просмотр буферов трассировки лучей и диагностики экспозиции после отрисовки обычного кадра.",
+
 	"caustica.options.rt.debugView.0": "Выкл.",
+
 	"caustica.options.rt.debugView.1": "Нормали",
+
 	"caustica.options.rt.debugView.2": "Альбедо",
+
 	"caustica.options.rt.debugView.3": "Глубина",
+
 	"caustica.options.rt.debugView.4": "Шероховатость",
+
 	"caustica.options.rt.debugView.5": "Движение",
+
 	"caustica.options.rt.debugView.6": "Зеркальность",
-	"caustica.options.rt.debugView.7": "Зеркальное движение"
+
+	"caustica.options.rt.debugView.7": "Зеркальное движение",
+
+	"caustica.options.rt.gamma": "Гамма",
+	"caustica.options.rt.gamma.tooltip": "Гамма яркости после преобразования. Значения ниже 1,00 осветляют тени и средние тона, сохраняя чёрный, белый и соотношения цветов.",
+
+	"caustica.options.rt.depthOfField": "Глубина резкости",
+	"caustica.options.rt.depthOfField.tooltip": "Трассирует первичные лучи через диафрагму камеры, чтобы объекты вне фокуса размывались так же, как у настоящего объектива. Параметр поля зрения задаёт фокусное расстояние, поэтому при узком FOV фокус настраивается точнее при той же диафрагме и расстоянии фокусировки.",
+
+	"caustica.options.rt.dofMode": "Режим глубины резкости",
+	"caustica.options.rt.dofMode.tooltip": "Как создаётся размытие. Простой собирает круг размытия из готового изображения: стабильно и дёшево, а резкий передний план накладывается на размытый фон, а не размазывается по нему. Физический пропускает первичные лучи через апертуру, и размытие становится настоящим боке объектива — ценой лучей и заметного сэмплирования при открытой диафрагме.",
+
+	"caustica.options.rt.dofMode.simple": "Простой",
+
+	"caustica.options.rt.dofMode.physical": "Физический",
+
+	"caustica.options.rt.dofMode.artistic": "Художественный",
+
+	"caustica.options.rt.dofArtisticBlur": "Сила размытия",
+	"caustica.options.rt.dofArtisticBlur.tooltip": "Наибольшее размытие художественного режима в процентах от высоты кадра. Это вся регулировка силы, и она означает одно и то же при любом угле обзора, разрешении и дистанции фокуса. Меньше 1% — деликатное разделение, 1–2% — заметно мягкий фон, выше 3% — эффект, поглощающий всё кроме плоскости фокуса.",
+
+
+	"caustica.options.rt.dofMaxBlur": "Макс. размытие",
+	"caustica.options.rt.dofMaxBlur.tooltip": "Наибольший диск размытия в процентах от высоты кадра. Светосильный объектив, сфокусированный вблизи, размывает дальний план сильнее высоты кадра; без ограничения всё дальше метра получило бы одно и то же размытие, и кадр выглядел бы мягким везде вместо резкого объекта на мягком фоне. Больше — глубже размытие, меньше — больше кадра остаётся резким.",
+
+	"caustica.options.rt.dofSamples": "Отсчёты глубины резкости",
+	"caustica.options.rt.dofSamples.tooltip": "Точки апертуры, через которые проходит каждый пиксель. Трассировка покрывает лишь небольшой диск размытия; остальную часть апертуры собирает из готового изображения отдельный проход. То есть этот параметр убирает мерцание трассируемой части, а не задаёт размер размытия. Каждая следующая точка стоит одного луча на пиксель, а не целой траектории.",
+
+	"caustica.options.rt.apertureMode": "Диафрагма",
+	"caustica.options.rt.apertureMode.tooltip": "Авто вычисляет диафрагменное число по замеренной сцене каждый кадр; Вручную привязывает его к значению «Размер диафрагмы», точно как кольцо объектива. Более открытая диафрагма (малые f-числа) сильнее размывает фон и пропускает больше света.",
+
+	"caustica.options.rt.apertureMode.auto": "Авто",
+
+	"caustica.options.rt.apertureMode.manual": "Вручную",
+
+	"caustica.options.rt.aperture": "Размер диафрагмы",
+	"caustica.options.rt.aperture.tooltip": "Диафрагменное число: фокусное расстояние, делённое на диаметр входного зрачка. Более открытая диафрагма (меньшие числа) даёт меньшую глубину резкости и более яркое изображение; более закрытая (большие числа) сохраняет больше сцены в фокусе и затемняет изображение.",
+
+	"caustica.options.rt.shutterMode": "Режим выдержки",
+	"caustica.options.rt.shutterMode.tooltip": "Авто вычисляет выдержку по замеренной сцене каждый кадр; Вручную привязывает её к значению «Выдержка».",
+
+	"caustica.options.rt.shutterMode.auto": "Авто",
+
+	"caustica.options.rt.shutterMode.manual": "Вручную",
+
+	"caustica.options.rt.shutterTime": "Выдержка",
+	"caustica.options.rt.shutterTime.tooltip": "Как долго виртуальный затвор остаётся открытым. Большие значения осветляют изображение (а при включённом размытии в движении удлиняют шлейф); меньшие — затемняют его.",
+
+	"caustica.options.rt.focusMode": "Фокусировка",
+	"caustica.options.rt.focusMode.tooltip": "Авто фокусируется на том, на что указывает центр экрана, как центральная точка автофокуса камеры; Вручную фокусируется на фиксированном расстоянии.",
+
+	"caustica.options.rt.focusMode.auto": "Авто",
+
+	"caustica.options.rt.focusMode.manual": "Вручную",
+
+	"caustica.options.rt.focusDistance": "Расстояние фокусировки",
+	"caustica.options.rt.focusDistance.tooltip": "На каком расстоянии от камеры находится плоскость резкости, в метрах. Всё на этом расстоянии остаётся резким, а всё ближе или дальше размывается на величину, заданную диафрагмой.",
+
+	"caustica.options.rt.autoValue": " (авто)",
+
+	"caustica.options.rt.hdrUiBrightness": "Яркость HDR-интерфейса",
+	"caustica.options.rt.hdrUiBrightness.tooltip": "Абсолютная яркость (в нитах), назначаемая интерфейсу, созданному для SDR, на HDR-дисплее. BT.2408 задаёт белому цвету графики SDR 203 нита; выходное преобразование ACES HDR задаёт белой поверхности в мире около 107 нит при пике 1000 нит.",
+
+	"caustica.options.rt.denoiser": "Шумоподавитель",
+	"caustica.options.rt.denoiser.tooltip": "Какой шумоподавитель очищает изображение с трассировкой пути. Авто выбирает лучший из доступных на этой машине. DLSS Ray Reconstruction требует видеокарту NVIDIA RTX, NRD требует свою нативную библиотеку, а встроенный шумоподавитель работает всегда, но даёт более мягкое изображение, так как не имеет истории кадров. Выкл. показывает необработанное трассированное изображение.",
+
+	"caustica.options.rt.denoiser.auto": "Авто",
+
+	"caustica.options.rt.denoiser.dlss-rr": "DLSS Ray Reconstruction",
+
+	"caustica.options.rt.denoiser.nrd": "NRD",
+
+	"caustica.options.rt.denoiser.builtin": "Встроенный",
+
+	"caustica.options.rt.denoiser.off": "Выкл.",
+
+	"caustica.options.rt.superResolutionMethod": "Метод суперразрешения",
+	"caustica.options.rt.superResolutionMethod.tooltip": "Какой апскейлер переносит изображение разрешения рендеринга на ваш экран. Авто использует FSR, когда его среда выполнения установлена, и встроенное билинейное разрешение в противном случае. Билинейное работает всегда, но даёт более мягкое изображение.",
+
+	"caustica.options.rt.superResolutionMethod.auto": "Авто",
+
+	"caustica.options.rt.superResolutionMethod.fsr": "FSR",
+
+	"caustica.options.rt.superResolutionMethod.bilinear": "Билинейное",
+
+	"caustica.options.rt.superResolution": "Суперразрешение",
+	"caustica.options.rt.superResolution.tooltip": "Разрешение рендеринга, в котором трассируется мир, прежде чем масштабироваться до вашего экрана. Более низкие режимы рендерят меньше пикселей и масштабируют агрессивнее ради большей частоты кадров; более высокие рендерят больше пикселей ради более резкого изображения. DLSS Ray Reconstruction использует свои эквивалентные режимы.",
+
+	"caustica.options.rt.superResolution.0": "Нативное AA",
+
+	"caustica.options.rt.superResolution.1": "Качество",
+
+	"caustica.options.rt.superResolution.2": "Сбалансированное",
+
+	"caustica.options.rt.superResolution.3": "Производительность",
+
+	"caustica.options.rt.superResolution.4": "Ультра производительность",
+
+	"caustica.options.rt.debugView.8": "Псевдоцвет экспозиции",
+
+	"caustica.options.rt.debugView.9": "Вес экспозамера",
+
+	"caustica.options.rt.debugView.10": "Круг размытия",
+
+	"caustica.options.rt.debugView.11": "Цель автофокуса",
+
+	"caustica.options.rt.debugView.12": "Радиус размытия (измеренный)"
 }

@@ -195,15 +195,29 @@ public final class NgxRuntime {
         return extractBundledNatives();
     }
 
+    /**
+     * The native directory for this platform, extracted from the jar.
+     *
+     * <p>A shim already unpacked there is kept when the jar does not carry one: the NGX natives come from the
+     * closed DLSS SDK, so a build made without {@code DLSS_SDK} produces a jar that cannot supply them, and
+     * throwing away a working extraction would disable DLSS on a machine that had it working a moment ago.
+     * When the jar does bundle them they win, because {@link #extractBundledNative} compares the bytes and
+     * rewrites a stale copy.
+     */
     private static Path extractBundledNatives() {
         Path dir = FabricLoader.getInstance().getGameDir().resolve("caustica-ngx")
                 .resolve("natives").resolve(PLATFORM_NATIVES.platformDir());
+        Path shim = dir.resolve(PLATFORM_NATIVES.shimName());
         try {
             Files.createDirectories(dir);
-            boolean hasShim = extractBundledNative(PLATFORM_NATIVES.shimName(), dir.resolve(PLATFORM_NATIVES.shimName()));
+            boolean hasShim = extractBundledNative(PLATFORM_NATIVES.shimName(), shim);
             extractBundledFeatureLibraries(dir);
-            return hasShim && Files.isRegularFile(dir.resolve(PLATFORM_NATIVES.shimName()))
-                    ? dir.resolve(PLATFORM_NATIVES.shimName()) : null;
+            if (hasShim || Files.isRegularFile(shim)) {
+                return shim;
+            }
+            CausticaMod.LOGGER.warn("NGX natives are neither bundled in this jar nor already extracted to {}",
+                    dir);
+            return null;
         } catch (IOException e) {
             CausticaMod.LOGGER.warn("Could not extract bundled NGX natives to {}", dir, e);
             return null;

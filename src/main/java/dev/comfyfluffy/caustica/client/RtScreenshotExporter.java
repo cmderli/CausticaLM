@@ -39,7 +39,7 @@ public final class RtScreenshotExporter {
             return pngName(output);
         } catch (Exception e) {
             CausticaMod.LOGGER.warn("Couldn't save residual-exposure ACEScg screenshot", e);
-            callback.accept(Component.literal("Couldn't save Caustica EXR: " + e.getMessage())
+            callback.accept(Component.literal("Couldn't save CausticaLM EXR: " + e.getMessage())
                     .withStyle(ChatFormatting.RED));
             return null;
         }

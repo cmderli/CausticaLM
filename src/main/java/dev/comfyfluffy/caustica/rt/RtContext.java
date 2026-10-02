@@ -103,7 +103,7 @@ public final class RtContext {
         }
         if (!RtDeviceBringup.computeQueueReserved()) {
             unavailable = true;
-            CausticaMod.LOGGER.warn("Caustica RT disabled: no dedicated compute queue was reserved at device creation");
+            CausticaMod.LOGGER.warn("CausticaLM RT disabled: no dedicated compute queue was reserved at device creation");
             return null;
         }
         instance = create(device);

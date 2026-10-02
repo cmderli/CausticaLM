@@ -65,6 +65,7 @@ import dev.comfyfluffy.caustica.rt.pipeline.RtDlssFg;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssRr;
 import dev.comfyfluffy.caustica.rt.overlay.RtWorldOverlay;
 import dev.comfyfluffy.caustica.rt.pipeline.RtHdrCompositePipeline;
+import dev.comfyfluffy.caustica.rt.pipeline.RtDepthOfFieldPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtMotionBlurPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtSdrPresentPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtExposure;
@@ -75,6 +76,8 @@ import dev.comfyfluffy.caustica.rt.terrain.RtTerrain;
 import java.nio.ByteBuffer;
 import java.nio.LongBuffer;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -108,6 +111,253 @@ public final class RtComposite {
     private static final long PATH_RECORD_BYTES = 48L;
     private static int debugView() {
         return CausticaConfig.Rt.Composite.DEBUG_VIEW.value();
+    }
+
+    /**
+     * The gather pass' optical parameters for this frame, or null when depth of field is off.
+     *
+     * <p>Every radius is in DISPLAY pixels, because the gather works in display space. The circle of confusion is
+     * a fraction of the frame height, which is what makes the look survive a resolution change; the hyperfocal
+     * constant is that same frame expressed as the distance at which the lens' own blur reaches it; and the
+     * traced part is the flat cap {@link RtCamera#TRACED_DISC_PIXELS} scaled from render to display pixels.
+     * Passing them separately is what lets the shader subtract the traced disc from the full one and gather only
+     * the remainder, so the aperture the camera was set to is their quadrature sum and never their product.
+     */
+    private RtDepthOfFieldPipeline.Params depthOfFieldParams(RtCamera.Frame optics) {
+        // The largest disc the renderer will draw, as a fraction of the frame height. It is a BOUND and not a
+        // strength: with the thin-lens falloff the disc a surface gets is already the lens' own, and this only
+        // stops a very fast lens focused close from putting the whole frame past the point where it reads as a
+        // picture. It is also the number the traced-ray gate is scaled from, so the trace and the gather always
+        // describe the same lens.
+        float capPixels = CausticaConfig.Rt.Camera.MAX_BLUR_PERCENT.value() / 100.0f * displayH;
+        // The two halves of the lens the shader applies: the aperture's radius as a disc on the frame, and the
+        // focal length that turns a surface's distance into its image distance. One block is one metre, so the
+        // focal length in blocks is the focal length in metres.
+        //
+        // The circle of confusion is NOT one of them. In the thin-lens form it is the cap the disc saturates at,
+        // not a term in the falloff -- `targetRadiusPixels` carries it -- which is what the photographic
+        // definition means: the sharp range is where the disc is still smaller than this, so a bigger circle of
+        // confusion is a DEEPER depth of field and the setting is named for what it measures.
+        // The aperture the camera is actually at, for every mode. An earlier version measured the artistic look
+        // at the wider of this and a fixed f/1.4, to stop the auto programme's stop-down from erasing it -- but
+        // that also took away the only control over how much of the NEAR field blurs, and at a long focal length
+        // the near field then saturates the cap a few centimetres off the focal plane, so everything in front of
+        // the subject turns to mush with nothing able to soften it. The aperture is the depth of field; the
+        // measured defects that motivated the override were the traced-disc and gather-resolution bugs, and both
+        // are fixed at their source now.
+        float apertureRadiusPixels = optics.defocusScaleBlocks()
+                * (displayH / RtCamera.SENSOR_HEIGHT_METRES)
+                * CausticaConfig.Rt.Camera.ARTISTIC_BLUR.value();
+        float focalLengthBlocks = optics.focalLengthMetres();
+        // The disc the trace itself resolved, and it has to follow the APERTURE: a constant disc meant a
+        // stopped-down lens still traced a wide cone, so the trace drew the blur, the gather found nothing left
+        // to add, and the result was a defocused picture built from a handful of samples per pixel -- visible as
+        // ringing along edges at f/32, where the lens should have been drawing almost no disc at all.
+        //
+        // It is a flat cap on the TRACED part rather than a fraction of the total, because the trace's limit is
+        // its sample count and not the aperture: one primary ray per pixel cannot resolve a disc wider than a few
+        // pixels whatever the lens is doing, so this is the size at which the trace stops being an improvement on
+        // the gather and starts being speckle.
+        // Only the mode that actually offsets its primary rays may claim a traced disc. The artistic mode traces
+        // them sharp and lets the gather supply the entire aperture -- `tracedDiscFraction` returns zero for it --
+        // so reporting a disc here made the shader subtract blur that was never applied: it computed
+        // sqrt(full^2 - traced^2) and gathered that instead of `full`, which under-blurs, and it did so in a way
+        // that depends on the aperture, so the error moved whenever the auto programme moved the iris.
+        float tracedRadiusPixels = CausticaConfig.Rt.Camera.physicalDepthOfField()
+                ? Math.min(RtCamera.TRACED_DISC_PIXELS
+                        * Math.max((float) displayH / Math.max(renderH, 1), 1.0f), capPixels)
+                : 0.0f;
+        // What the aperture draws at infinity, in display pixels. Only the traced-aperture split and the
+        // diagnostic need it: the shader gets the circle of confusion and the hyperfocal constant instead, and
+        // builds every disc from those.
+        float fullRadiusPixels = optics.defocusScaleBlocks()
+                * (displayH / RtCamera.SENSOR_HEIGHT_METRES);
+        // Any change to the aperture or the focal plane re-blurs the frame, so the history describes a different
+        // image. Aperture and focus are quantized ladder/physical values rather than free floats, so their bits
+        // are a stable token: it only moves when the optics really moved.
+        int token = Float.floatToIntBits(optics.defocusScaleBlocks()) * 31
+                + Float.floatToIntBits(optics.focusDistanceBlocks());
+        if (token != depthOfFieldResetToken) {
+            historyTokenValid = false;
+            depthOfFieldResetToken = token;
+        }
+        // The history holds an image blurred with the PREVIOUS aperture and focal plane, so a change to either
+        // has to discard it rather than accumulate across it. The shader compares the token it is handed against
+        // the one the history was written under; the host hands it the previous frame's token, so a mismatch is
+        // exactly "the optics moved since that image was made".
+        int historyToken = historyTokenValid ? depthOfFieldHistoryToken : ~token;
+        historyTokenValid = true;
+        depthOfFieldHistoryToken = token;
+        logDepthOfFieldIfDue(capPixels, tracedRadiusPixels, optics,
+                Math.max(1, (displayW + 1) / 2), Math.max(displayW, 1));
+        return new RtDepthOfFieldPipeline.Params(capPixels, tracedRadiusPixels,
+                optics.focusDistanceBlocks(), apertureRadiusPixels, focalLengthBlocks,
+                DOF_FOREGROUND_TOLERANCE, DOF_DEPTH_TOLERANCE,
+                CausticaConfig.Rt.Camera.physicalDepthOfField()
+                        ? DOF_PHYSICAL_HISTORY_WEIGHT : DOF_SIMPLE_HISTORY_WEIGHT,
+                historyToken, (int) (frameCounter & 0x7FFFFFFFL), DOF_TAP_COUNT);
+    }
+
+    /**
+     * Taps the gather takes per pixel per frame.
+     *
+     * <p>Taps are spread over the disc's area, so the number that decides whether a disc reads as blur is the
+     * square root: 96 taps is about ten across the diameter, and the history's several effective frames multiply
+     * that again. It is the one dial that directly buys disc quality -- the tap pattern and the prefiltered
+     * source both make each tap count for more area, but nothing substitutes for having enough of them -- at a
+     * cost of one filtered read of the source and one of the depth guide per tap.
+     */
+    /**
+     * Points of the disc the gather reads per pixel.
+     *
+     * <p>The taps divide the disc's area, so their spacing is its radius over the square root of this -- which is
+     * why the count is not a quality dial that can be left low: a disc of r texels needs about pi*r^2 taps before
+     * the taps stop leaving gaps, and a gather that samples a high-frequency source through gaps does not blur it,
+     * it picks out patches of it. That is what a flame made of single-texel voxels looked like through ninety-six
+     * taps: hard-edged coloured squares instead of a soft glow.
+     */
+    private static final int DOF_TAP_COUNT = 256;
+    /**
+     * How much of the previous frame the gather keeps. High enough that a wide disc resolves within a handful of
+     * frames, low enough that a moving camera recovers from a rejected history quickly. The shader drops the
+     * history outright wherever the guides say the surface moved on, so this only sets the residual.
+     */
+    private static final float DOF_PHYSICAL_HISTORY_WEIGHT = 0.85f;
+    /**
+     * The gather's history weight, for the modes that trace their rays sharp.
+     *
+     * <p>It is deliberately light. The taps already average a wide neighbourhood within one frame, so what the
+     * history adds is a little noise reduction -- and what it costs is a frame of latency on everything, which
+     * a blur that is this wide turns into a visible smear: a colour that was beside a surface before the camera
+     * moved keeps being mixed into it, and a streak of it follows the surface around. At 0.5 that smear is
+     * plain on a close object lit differently from its surroundings, which is exactly the case a wide aperture
+     * makes common.
+     */
+    private static final float DOF_SIMPLE_HISTORY_WEIGHT = 0.25f;
+    /**
+     * A tap nearer than the receiver by more than this ratio is behind it and cannot contribute. This is the
+     * gather's occlusion rule, and it is deliberately loose: a tap slightly nearer is a surface at the same
+     * depth with sub-texel noise, not an occluder, and rejecting it would punch holes in the disc wherever the
+     * depth guide is not perfectly smooth.
+     */
+    private static final float DOF_FOREGROUND_TOLERANCE = 1.05f;
+    /**
+     * Relative view-distance difference at which the history is describing a different surface.
+     *
+     * <p>It has to be loose enough to survive a moving camera. Approaching a surface by one metre changes its
+     * distance by 1/Z of itself, so a tight tolerance rejects the history on almost every frame of ordinary
+     * movement -- and since the history is what turns several frames of taps into one dense pattern, rejecting
+     * it is what leaves a wide disc looking sparse exactly when the player is moving. The disocclusion the guide
+     * actually has to catch is a surface appearing from behind another, which is a much larger change than this.
+     */
+    private static final float DOF_DEPTH_TOLERANCE = 0.15f;
+    /** Below this residual disc radius, in gather pixels, a pixel keeps the sharp image untouched. */
+    private static final float DOF_MIN_RADIUS_PIXELS = 0.35f;
+    /**
+     * Whether the gather's residual smoothing runs. A non-zero value enables the two stages; the radius itself
+     * is per pixel and lives in the shader, because it follows each pixel's own circle of confusion and nothing
+     * the host knows per frame can stand in for that.
+     */
+    private static final int DOF_BLUR_ENABLED = 1;
+    /** Debug view that asks the gather to draw its own circle of confusion instead of gathering. */
+    private static final int DOF_RADIUS_DEBUG_VIEW = 12;
+    /** Debug view that shows what the autofocus window measured, painted into the depth guide. */
+    private static final int AUTOFOCUS_DEBUG_VIEW = 11;
+    /** Closest the lens focuses, in blocks: the floor the artistic mode's blur is measured against. */
+    public static final float FOCUS_MIN_BLOCKS = 0.25f;
+
+    /**
+     * The subject distance the depth of field is measured against, in blocks.
+     *
+     * <p>It is what makes the blur a ratio of distances rather than a size: the disc a surface gets is this
+     * distance over its own, so the falloff keeps grading all the way to the horizon instead of saturating a
+     * few times the focus distance out and leaving every far surface equally soft. Twenty blocks is a subject
+     * across a room -- close enough that the lens is genuinely defocused there, far enough that the number is
+     * not about the camera's own nose.
+     */
+    /** The gather's diagnostic stage: not a real stage, only the shader's hook for that debug view. */
+    private static final int DOF_RADIUS_DEBUG_STAGE = 9;
+
+    /**
+     * The disc the trace's own aperture samples cover, as a fraction of the full circle of confusion, so the
+     * primary pass can cap its lens radius. The same split has to be handed to the gather as two radii, which is
+     * what {@link #depthOfFieldParams} does; both read this one value so the two halves always add up to the
+     * aperture the camera was set to.
+     */
+    private static float tracedDiscFraction(RtCamera.Frame optics) {
+        if (!CausticaConfig.Rt.Camera.physicalDepthOfField()) {
+            // The simple mode traces sharp rays and gathers the whole aperture from the finished image, so the
+            // primary pass must not offset them at all.
+            return 0.0f;
+        }
+        return RtCamera.tracedDiscFraction(
+                optics.defocusScaleBlocks() * optics.renderHeight() / RtCamera.SENSOR_HEIGHT_METRES,
+                RtCamera.TRACED_DISC_PIXELS);
+    }
+
+    private long lastDofLogNanos;
+    private int lastDofLogToken;
+
+    /**
+     * Reports what the gather was handed, once every few seconds. The radius is the one number the whole effect
+     * hangs on and it is derived from four others, so a frame that is sharp for no visible reason is otherwise
+     * indistinguishable from a frame whose disc came out as a fraction of a pixel.
+     */
+    private void logDepthOfFieldIfDue(float capPixels, float tracedRadiusPixels, RtCamera.Frame optics,
+                                      int gatherWidth, int displayWidth) {
+        long now = System.nanoTime();
+        if (lastDofLogNanos != 0L && now - lastDofLogNanos < 3_000_000_000L) {
+            return;
+        }
+        lastDofLogNanos = now;
+        // The focus distance is reported in BLOCKS, and a block is metre, so it is also the distance in metres
+        // -- but only if it is said so. The manual setting is the number the player typed, so when the two
+        // disagree the autofocus is what moved the plane, and by how much.
+        // The sharp range, worked out from the same law the shader applies: the disc a surface gets is
+        // k*|Zf-Z|/(Z*Zf), so the band where it is still inside the circle of confusion runs from
+        // Zf*c/(c + k') to Zf*c/(c - k'), with k' the coefficient in blocks. That is what makes "is the whole
+        // frame sharp when focused far" a question the log answers: a band of a few blocks around a distant
+        // focus is the bug the user reported, and a band from a few blocks out to infinity is the lens working.
+        // `near -= 1` and `far += 1` keep the band off the focus distance when the disc at the focus distance is
+        // itself wider than the circle of confusion, which is a lens that cannot resolve anything.
+        float focus = optics.focusDistanceBlocks();
+        // The hyperfocal distance, from the PHOTOGRAPHIC circle of confusion rather than from the renderer's cap.
+        // The two are different quantities and conflating them is what made an earlier version of this line
+        // report six hundred kilometres: the cap is how large a disc the effect is allowed to draw, while the
+        // hyperfocal distance is defined by the largest disc a viewer still reads as sharp -- 0.03 mm on a 35 mm
+        // frame, which this sensor's height scales to. It is what says whether "focused far away" really does
+        // leave the whole picture sharp, so it has to be the perceptual number and not the artistic one.
+        // One block is one metre, so the circle of confusion is usable as it stands.
+        float perceptualCocBlocks = RtCamera.PHOTOGRAPHIC_COC_METRES;
+        float focalLength = optics.focalLengthMetres();
+        float hyperfocal = optics.aperture() > 0.0f && perceptualCocBlocks > 0.0f
+                ? focalLength * focalLength / (optics.aperture() * perceptualCocBlocks)
+                : Float.POSITIVE_INFINITY;
+        float nearLimit = 0.0f;
+        float farLimit = Float.POSITIVE_INFINITY;
+        if (focus > 0.0f && Float.isFinite(hyperfocal)) {
+            nearLimit = focus * hyperfocal / (hyperfocal + focus);
+            farLimit = hyperfocal > focus
+                    ? focus * hyperfocal / (hyperfocal - focus)
+                    : Float.POSITIVE_INFINITY;
+        }
+        CausticaMod.LOGGER.info(
+                "RT dof diag: mode={} focusMode={} measured={} m latched={} m manual={} m f={} mm f/{} "
+                        + "coc={} px H={} m sharp={}-{} m traced={} px gather={} px taps={} "
+                        + "guide={} render={} display={} toGather={}",
+                CausticaConfig.Rt.Camera.DOF_MODE.get(), CausticaConfig.Rt.Camera.FOCUS_MODE.get(),
+                fmt(exposure.measuredFocusBlocks()), fmt(focus),
+                fmt(CausticaConfig.Rt.Camera.FOCUS_DISTANCE.value()),
+                fmt(optics.focalLengthMetres() * 1000.0f), fmt(optics.aperture()),
+                fmt(capPixels), fmt(hyperfocal), fmt(nearLimit),
+                Float.isFinite(farLimit) ? fmt(farLimit) : "inf",
+                fmt(tracedRadiusPixels), fmt(capPixels * 0.5f), DOF_TAP_COUNT,
+                renderW, renderH, displayW,
+                fmt((float) Math.max(1, (displayW + 1) / 2) / Math.max(displayW, 1)));
+    }
+
+    private static String fmt(float value) {
+        return String.format(java.util.Locale.ROOT, "%.3f", value);
     }
 
     private static int spp() {
@@ -185,6 +435,17 @@ public final class RtComposite {
     // motion blur option is on. Computed once per frame in recordFrame and used by both the bloom prefilter
     // and the display pass, so the two never disagree about which image is being displayed.
     private RtImage blurredScene;
+    private RtDepthOfFieldPipeline depthOfFieldPipeline;
+    /** Half-display-resolution gather result and the previous frame's, ping-ponged as the pass' history. */
+    private RtImage[] depthOfFieldScratch = new RtImage[0];
+    /** Display-resolution result of the gather; what the bloom and display mappers read when it is active. */
+    private RtImage depthOfFieldScene;
+    private int depthOfFieldScratchIndex;
+    /** Aperture/focus changes that invalidate the gather's accumulated history. */
+    private int depthOfFieldResetToken;
+    /** The token the history buffer was written under; a mismatch is what tells the gather to drop it. */
+    private int depthOfFieldHistoryToken;
+    private boolean historyTokenValid;
     // Which scene image the bloom prefilter and the display mapper are currently bound to. Changing it
     // rewrites their descriptor sets, which is only safe once no in-flight frame still uses the old one.
     private long boundSceneSource;
@@ -512,7 +773,8 @@ public final class RtComposite {
     }
 
     /** Capture the frame's camera for the next composite. Called from GameRendererMixin. */
-    public void captureFrame(Matrix4f projection, Matrix4fc viewRotation, double cameraX, double cameraY, double cameraZ) {
+    public void captureFrame(Matrix4f projection, Matrix4fc viewRotation, double cameraX, double cameraY,
+                             double cameraZ) {
         frameProjection.set(projection);
         frameViewRotation.set(viewRotation);
         camX = cameraX;
@@ -616,6 +878,9 @@ public final class RtComposite {
             }
             if (motionBlurPipeline == null) {
                 motionBlurPipeline = RtMotionBlurPipeline.create(ctx);
+            }
+            if (depthOfFieldPipeline == null) {
+                depthOfFieldPipeline = RtDepthOfFieldPipeline.create(ctx);
             }
             if (skyLut == null) {
                 // Normally already created by ensureWorld before the pipeline exists at all; this only
@@ -933,7 +1198,8 @@ public final class RtComposite {
         int reconSizeKey = RtRecon.INSTANCE.renderSizeKey();
         if (output != null && continuationQueue != null
                 && displayImage != null && hdrDisplayImage != null && rrOutput != null
-                && blurredScene != null && bloomLevels.length > 0 && exposure.ready()
+                && blurredScene != null && depthOfFieldScene != null && depthOfFieldScratch.length == 2
+                && bloomLevels.length > 0 && exposure.ready()
                 && displayW == width && displayH == height
                 && renderSizeKey == reconSizeKey) {
             return;
@@ -948,6 +1214,14 @@ public final class RtComposite {
         if (blurredScene != null) {
             blurredScene.destroy();
             blurredScene = null;
+        }
+        for (RtImage scratch : depthOfFieldScratch) {
+            scratch.destroy();
+        }
+        depthOfFieldScratch = new RtImage[0];
+        if (depthOfFieldScene != null) {
+            depthOfFieldScene.destroy();
+            depthOfFieldScene = null;
         }
         boundSceneSource = 0;
         destroyBloomLevels();
@@ -1013,6 +1287,34 @@ public final class RtComposite {
         rrOutput = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "reconstruction output " + width + "x" + height);
         // Motion-blurred copy of rrOutput, written only on frames where the motion blur option is on. Always
         // allocated so toggling the option never has to resize the frame graph mid-frame.
+        // Depth of field: the gather runs at half the RENDER resolution, which is what makes a kernel of dozens
+        // of pixels affordable, and keeps two of them so the previous frame feeds this one's history. Its output
+        // is a full display-resolution image so the passes downstream read one format and size whatever ran
+        // before.
+        //
+        // HALF THE DISPLAY, which is the resolution the gather's whole design assumes. It was half the RENDER
+        // size, and those are the same thing only when nothing is reconstructing: under DLSS-RR at quality the
+        // render target is two thirds of the display, so the gather came out at a THIRD of it and the upscale
+        // magnified by three. That is several pixels of softening on every pixel the upscale took from the
+        // gather, against a sharp image everywhere else, and the boundary between the two is a seam that runs
+        // along whatever radius happens to cross the threshold -- which is what read as stair-stepped edges on
+        // in-focus geometry and as banding in the defocused field.
+        //
+        // Half the display also makes the two backend modes behave alike, which is the real tell: the gather
+        // dispatch is sized from the image it writes, so this ratio is the only thing that changed the effect's
+        // appearance between DLSS and DLAA.
+        int dofWidth = Math.max(1, (width + 1) / 2);
+        int dofHeight = Math.max(1, (height + 1) / 2);
+        depthOfFieldScratch = new RtImage[] {
+            ctx.createStorageImage(dofWidth, dofHeight, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                    "depth of field gather " + dofWidth + "x" + dofHeight + " a"),
+            ctx.createStorageImage(dofWidth, dofHeight, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                    "depth of field gather " + dofWidth + "x" + dofHeight + " b"),
+        };
+        depthOfFieldScratchIndex = 0;
+        historyTokenValid = false;
+        depthOfFieldScene = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                "depth of field scene " + width + "x" + height);
         blurredScene = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
                 "motion blurred scene " + width + "x" + height);
         exposure.ensureResources(ctx);
@@ -1074,14 +1376,18 @@ public final class RtComposite {
         // Reserve the graphics-use value that guards this frame's reusable TLAS and entity resources.
         RtGpuExecutor.GraphicsUse graphicsUse = gpuExecutor.beginGraphicsUse(encoder);
         RtGpuExecutor.GraphicsUseWaiter graphicsUseWaiter = gpuExecutor.graphicsUseWaiter();
-        // Reuse a completed readback slot, then latch one pre-exposure value for both raygen and resolve.
-        // This belongs after the timeline snapshot and before any world push data is written.
-        exposure.beginFrame(graphicsUseWaiter);
+        // Reuse a completed readback slot, then latch one pre-exposure value and one lens for the whole frame
+        // (raygen, metering, and the exposure image all read them back). This belongs after the timeline
+        // snapshot and before any world push data is written.
+        exposure.beginFrame(graphicsUseWaiter, frameProjection, renderH);
         pendingGraphicsUse = graphicsUse;
         RtEntities.FrameEntities frameEntities = null;
         VkCommandBuffer cmd = encoder.allocateAndBeginTransientCommandBuffer();
         RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_COMMAND_BUFFER, cmd.address(), "composite command buffer");
         int debugView = debugView();
+        // The autofocus debug view reads the depth guide, so that is where the autofocus pass has to write its
+        // answer for the view to show it.
+        exposure.setFocusDiagnostic(debugView == AUTOFOCUS_DEBUG_VIEW);
         RtTerrain terrain = RtTerrain.currentOrNull();
         try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope frameLabel = RtDebugLabels.scope(ctx, cmd, "composite frame")) {
             // A reconstruction backend drives the upscale: trace + jitter at render res, the backend
@@ -1167,6 +1473,7 @@ public final class RtComposite {
             // resolved slot rides along with the uploadPending() call right below.
             BreakEntry[] breaking = breakingEntries(terrain);
             SkyPush sky = skyPush();
+            RtCamera.Frame optics = exposure.optics();
             new WorldPushData(
                     frameInvViewProj,
                     new Float3((float) (camX - terrain.blockX), (float) (camY - terrain.blockY),
@@ -1202,7 +1509,26 @@ public final class RtComposite {
                     CausticaConfig.Rt.Lights.RIS_CANDIDATES.value(),
                     // Must be the SAME value the exposure resolve divides out this frame (it reads it
                     // from the same RtExposure accessor), or the two stop cancelling.
-                    exposure.preExposure()
+                    exposure.preExposure(),
+                    // The lens, latched with the exposure above. dofParams.x is the defocus radius per block
+                    // of distance from the eye, y the focal plane in blocks, z whether the aperture is
+                    // sampled at all; see RtCamera and world.rgen's lens branch.
+                    new Float4(
+                            CausticaConfig.Rt.Camera.depthOfField() ? optics.defocusScaleBlocks() : 0.0f,
+                            optics.focusDistanceBlocks(),
+                            CausticaConfig.Rt.Camera.depthOfField() ? 1.0f : 0.0f,
+                            optics.maxDefocusConeMultiple()),
+                    // How many points of the aperture each pixel traces a path through. The indirect pass divides
+                    // the radiance it sums by this, so several samples are an average rather than a brighter
+                    // image. Forced to one with depth of field off, where every sample would be the same ray.
+                    (float) (CausticaConfig.Rt.Camera.depthOfField()
+                            ? CausticaConfig.Rt.Camera.DOF_SAMPLES.value() : 1),
+                    // How much of the aperture the trace's own aperture samples cover. The primary pass caps its
+                    // lens radius here so the traced disc stays one a single sample per pixel can resolve; the
+                    // gather pass supplies the remainder of the camera's aperture from the reconstructed image,
+                    // and dofParams carries the full radius it needs for that.
+                    CausticaConfig.Rt.Camera.depthOfField()
+                            ? optics.defocusScaleBlocks() * tracedDiscFraction(optics) : 0.0f
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
@@ -1311,6 +1637,61 @@ public final class RtComposite {
                     sceneSource = blurredScene.view;
                 }
             }
+            // Depth of field gathers over the finished display-resolution image, after motion blur and before
+            // the bloom prefilter: the gather is a lens effect, so it belongs on the sensor side of both the
+            // exposure integration and the display transform. It runs after motion blur rather than before so
+            // that the streak is integrated from a sharp image and the gather then blurs the result — the order
+            // the two effects physically happen in — and so that motion blur's per-tap depth test compares the
+            // sharp guides it was written against rather than an already-blurred image.
+            //
+            // Metering still reads the sharp rrOutput, so the aperture can change the image without changing
+            // what the auto exposure measures.
+            if (CausticaConfig.Rt.Camera.depthOfField() && depthOfFieldScratch.length == 2
+                    && depthOfFieldPipeline != null && depthOfFieldScene != null) {
+                // The gather samples the depth and motion guides and the reconstructed image. Every one of them
+                // was written earlier in this same command buffer, so a barrier has to separate the writes from
+                // this read -- without it the gather sees whatever the previous frame left, which is a frame of
+                // latency at best and a partially overwritten guide at worst.
+                VulkanCommandEncoder.memoryBarrier(cmd, stack);
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "depth of field");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.depthOfField")) {
+                    // The gather's output is ALWAYS its own image. It used to write back into the motion blur's
+                    // result when that pass had run, to save a buffer -- which made the gather read the image it
+                    // was writing: one image bound as both a sampled and a storage descriptor, taps reading a
+                    // frame that was half overwritten under them, and the result a blend of the scene with
+                    // itself. A third display-resolution image is a few megabytes and removes the whole class of
+                    // problem.
+                    RtImage history = depthOfFieldScratch[depthOfFieldScratchIndex];
+                    RtImage destination = depthOfFieldScratch[1 - depthOfFieldScratchIndex];
+                    RtImage gathered = depthOfFieldScene;
+                    // The gather writes `destination` and the upscale reads `history`, so the two images this
+                    // pass needs are the ones it must NOT confuse: a descriptor set cannot bind the same image
+                    // as a sampled image and a storage image at once, and a gather that read the image it is
+                    // writing would be reading a half-written frame.
+                    // The last argument is the display-resolution scene for the upscale's fallback, and it is
+                    // `sceneSource` rather than the reconstruction output: the gather reads the render-sized
+                    // image, but a pixel handed back untouched has to match the resolution of the frame, which is
+                    // what the reconstruction wrote.
+                    depthOfFieldPipeline.setImages(sceneSource, gDepth.view, gMotion.view,
+                            history.view, destination.view, gathered.view, sceneSource);
+                    // View 12 is the gather's own radius drawn by the gather, so it replaces the pipeline's
+                    // normal three stages with one diagnostic dispatch -- and the blur stages must not run over
+                    // it, because a blurred band chart is not a band chart.
+                    boolean radiusView = debugView == DOF_RADIUS_DEBUG_VIEW;
+                    int firstStage = radiusView ? DOF_RADIUS_DEBUG_STAGE : 0;
+                    depthOfFieldPipeline.dispatch(cmd, history.width, history.height, displayW, displayH,
+                            (float) history.width / (float) Math.max(renderW, 1),
+                            (float) history.height / (float) Math.max(renderH, 1),
+                            frameProjection.m22(), frameProjection.m32(),
+                            depthOfFieldParams(optics), DOF_MIN_RADIUS_PIXELS,
+                            radiusView ? 0 : DOF_BLUR_ENABLED, firstStage);
+                    depthOfFieldScratchIndex = 1 - depthOfFieldScratchIndex;
+                    sceneSource = gathered.view;
+                    depthOfFieldScratchIndex = 1 - depthOfFieldScratchIndex;
+                    sceneSource = gathered.view;
+                }
+            }
+
             // Bloom and the display mapper must both read whichever scene image is being displayed this
             // frame. The two pipelines cache their bindings, so this is free while the choice is unchanged —
             // and when it does change, no in-flight frame may still reference the old binding.
@@ -1365,7 +1746,9 @@ public final class RtComposite {
                      RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.debugPresent")) {
                     debugPresentPipeline.dispatch(cmd, displayW, displayH, debugView,
                             CausticaConfig.Rt.Exposure.CENTER_WEIGHT_SIGMA.value(),
-                            CausticaConfig.Rt.Exposure.CENTER_WEIGHT_FLOOR.value());
+                            CausticaConfig.Rt.Exposure.CENTER_WEIGHT_FLOOR.value(),
+                            RtCamera.SENSOR_HEIGHT_METRES, optics.focusDistanceBlocks(),
+                            optics.defocusScaleBlocks(), frameProjection.m22(), frameProjection.m32());
                 }
                 hdrWrittenThisFrame = false;
             }
@@ -1590,9 +1973,21 @@ public final class RtComposite {
             motionBlurPipeline.destroy();
             motionBlurPipeline = null;
         }
+        if (depthOfFieldPipeline != null) {
+            depthOfFieldPipeline.destroy();
+            depthOfFieldPipeline = null;
+        }
         if (blurredScene != null) {
             blurredScene.destroy();
             blurredScene = null;
+        }
+        for (RtImage scratch : depthOfFieldScratch) {
+            scratch.destroy();
+        }
+        depthOfFieldScratch = new RtImage[0];
+        if (depthOfFieldScene != null) {
+            depthOfFieldScene.destroy();
+            depthOfFieldScene = null;
         }
         if (bloomPipeline != null) {
             bloomPipeline.destroy();

@@ -227,9 +227,42 @@ void main() {
     float4 farH = mul(worldPush.invViewProj, float4(jndc.x, jndc.y, 0.0, 1.0));
     float3 nearP = nearH.xyz / nearH.w;
     float3 farP = farH.xyz / farH.w;
-    float3 origin = nearP + worldPush.camOffset;
+    float3 axisEye = nearP + worldPush.camOffset;
     float3 dir = normalize(farP - nearP);
     float rayConeSpread = primaryRayConeSpread(jndc, size, dir);
+    // Depth of field: the primary ray leaves the eye from a point of the lens, aimed at where the centre ray
+    // crosses the focal plane. Only a ray through the lens centre keeps the centre ray's direction, which is
+    // what leaves the focal plane itself sharp while everything else lands as a disc of confusion.
+    //
+    // The lens is applied HERE, in the pass that owns the primary ray, because a pixel's circle of confusion is
+    // the image of the lens and one point of it per frame is what the image has always had. Sampling the lens in
+    // the indirect pass instead would leave a single-aperture-sample frame with one fixed pupil offset per pixel
+    // -- a lens shift, which is sharp, not a disc -- and the blur would only appear once several samples filled
+    // the disc in. Keeping the disc here also means the guide buffers describe the same ray the frame is blurred
+    // with, so the depth and motion a denoiser reprojects with belong to the sample the pixel actually took.
+    float3 origin = axisEye;
+    if (worldPush.dofParams.z != 0.0) {
+        // dofParams.x is the defocus radius a focal plane at infinity reaches, i.e. the circle of confusion of a
+        // point at infinity; a point at Z lands at |Zf / Z - 1| of it. That disc is what has to stay bounded,
+        // not the lens: a subject close to the lens would otherwise project a bokeh many times the size of the
+        // frame, which no denoiser can integrate and which reads as a smear rather than as defocus.
+        // rayConeSpread IS one pixel's angular radius here, so dividing by it gives the blur in pixels and
+        // dofParams.w caps that as a fraction of the render height. No film or focal-length arithmetic is needed,
+        // which is deliberate: every hand conversion between slope, film and block units got the factor wrong.
+        float maxCocBlocks = max(worldPush.dofParams.w * rayConeSpread, RAY_CONE_MIN_WIDTH);
+        // The traced disc is deliberately smaller than the lens. One primary ray per pixel samples one point of
+        // the pupil, so it can only resolve a disc a few pixels wide: past that the sample stops reading as blur
+        // and becomes speckle with a hard in/out flicker along every silhouette, which temporal history cannot
+        // remove because the sample's own geometry keeps changing. The traced part therefore covers the small
+        // disc it can resolve, and the depth-of-field gather supplies the rest of the aperture from the
+        // reconstructed image. dofTracedRadiusBlocks is the block radius of that traced disc, so the aperture
+        // the camera was set to always remains the sum of the two.
+        float lensRadius = min(min(worldPush.dofParams.x, maxCocBlocks),
+                max(worldPush.dofTracedRadiusBlocks, 0.0));
+        float3 lens = axisEye + sampleLensDisc(lensRadius, float2(dispatchIndex), worldPush.frameIndex, 0u);
+        dir = normalize(axisEye + dir * worldPush.dofParams.y - lens);
+        origin = lens;
+    }
     uint seed = (dispatchIndex.x * 1973u + dispatchIndex.y * 9277u + 26699u)
             ^ (worldPush.frameIndex * 2654435761u);
     MediumStack cameraMedium = makeMediumStack((worldPush.flags & 1u) != 0u

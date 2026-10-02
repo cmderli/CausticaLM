@@ -236,6 +236,7 @@ abstract class GenerateShaderRecords extends DefaultTask {
             ["debugPresentPushProbe", "DebugPresentPush", "DebugPresentPushData"],
             ["bloomPushProbe", "BloomPush", "BloomPushData"],
             ["motionBlurPushProbe", "MotionBlurPush", "MotionBlurPushData"],
+            ["depthOfFieldPushProbe", "DepthOfFieldPush", "DepthOfFieldPushData"],
             ["denoisePushProbe", "DenoisePush", "DenoisePushData"],
             ["nrdFrontendPushProbe", "NrdFrontendPush", "NrdFrontendPushData"],
             ["nrdBackendPushProbe", "NrdBackendPush", "NrdBackendPushData"],

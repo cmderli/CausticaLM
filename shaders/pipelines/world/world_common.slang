@@ -88,6 +88,23 @@ public struct WorldPush {
     // near mid-grey at any scene brightness; the display pass divides it back out, so the two cancel
     // exactly and this cannot change the image. 1.0 disables it.
     public float    preExposure;
+    // Camera lens, for the primary rays only. x is the circle of confusion (in blocks) the lens produces
+    // per block of distance from the eye at a focal plane at infinity, so the shader scales it by
+    // |focusDistance / hitDistance - 1| to get the real defocus radius; y is the focus distance in blocks;
+    // z is 1 when the primary rays sample the aperture and 0 for a pinhole; w caps the circle of confusion as a
+    // fraction of the render height. camOffset and invViewProj already carry the centre ray, so those values plus
+    // the pixel's own measured ray cone are the whole lens.
+    public float4   dofParams;
+    // Points of the aperture the primary pass traces per pixel per frame, as a float because the two stages that
+    // share the frame's radiance sum each divide by it. One is a valid value and means what the renderer did
+    // before this lane existed. Pass A stores its aperture mean, and Pass B adds its own mean to that, so the
+    // frame's result is the mean over both the aperture samples and the spp loop rather than the sum of them.
+    public float    dofSamples;
+    // Block radius of the disc the primary rays' own aperture samples cover. One primary ray per pixel samples
+    // one point of the pupil, so it stops resolving a disc after a few pixels and the run turns into speckle;
+    // the depth-of-field gather covers the remainder of the camera's aperture, and this is where the two halves
+    // meet. Zero disables the traced part entirely.
+    public float    dofTracedRadiusBlocks;
 };
 
 // 32-byte hot area-light record. Linear ACEScg radiance uses packed R11G11B10; the

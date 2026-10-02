@@ -1,13 +1,13 @@
-# Caustica
+# CausticaLM
 
-Caustica is an experimental ray-traced renderer for Minecraft 26.2's Vulkan backend.
+CausticaLM is an experimental ray-traced renderer for Minecraft 26.2's Vulkan backend.
 It replaces the vanilla world view with hardware ray tracing and NVIDIA DLSS
 features while keeping Minecraft's familiar UI and gameplay intact.
 
-Caustica is early software. Expect bugs, missing visual cases, and frequent
+CausticaLM is early software. Expect bugs, missing visual cases, and frequent
 changes while the renderer is being built.
 
-![Caustica ray-traced Minecraft scene](docs/gallery/2026-07-09_21.25.14.jpg)
+![CausticaLM ray-traced Minecraft scene](docs/gallery/2026-07-09_21.25.14.jpg)
 
 ## Links
 
@@ -43,8 +43,9 @@ Turning reconstruction off traces at native resolution and shows the raw path-tr
 NRD (NVIDIA Real-time Denoisers) is a vendor-neutral compute denoiser used on devices that cannot run DLSS.
 It is reached through the `caustica_nrd` native shim, which is built from `native/nrd_shim` and is not part
 of the mod jar by default: build it, then put `libcaustica_nrd.so` (or `caustica_nrd.dll`) in `run/natives/`
-or point `-Dcaustica.nrd.path` at it. Without it the built-in denoiser is used instead. NRD is proprietary
-NVIDIA software; see `THIRD_PARTY_NOTICES.md`.
+or point `-Dcaustica.nrd.path` at it. `native/nrd_shim/build_cross.sh` builds the same shim for arm64 Linux
+and arm64 Android, and `gradle bundleNrdNatives` packages whichever builds exist. Without it the built-in
+denoiser is used instead. NRD is proprietary NVIDIA software; see `THIRD_PARTY_NOTICES.md`.
 
 The built-in denoiser and the NRD backend resolve to display resolution with a bilinear filter unless an
 AMD FidelityFX (FSR) Vulkan runtime is present, in which case the Super Resolution Method option can select
@@ -70,13 +71,13 @@ DLSS features report themselves unavailable and reconstruction falls back to NRD
 
 1. Install Fabric Loader for Minecraft `26.2`.
 2. Install Fabric API.
-3. Put the Caustica jar in your Minecraft `mods` folder.
+3. Put the CausticaLM jar in your Minecraft `mods` folder.
 4. Launch the game with the Vulkan graphics backend.
-5. Open Video Settings to adjust Caustica's renderer options.
+5. Open Video Settings to adjust CausticaLM's renderer options.
 
 ## Usage Notes
 
-- Caustica is client-side only.
+- CausticaLM is client-side only.
 - DLSS Ray Reconstruction and Frame Generation require supported NVIDIA
   hardware and drivers.
 - On Linux if Minecraft crashes on startup with stack overflow errors, try adding `-Xss2M` to the Java args to increase the stack size.
@@ -84,25 +85,25 @@ DLSS features report themselves unavailable and reconstruction falls back to NRD
   `-XX:+UseCompactObjectHeaders -XX:+AlwaysPreTouch -XX:+UseStringDeduplication -XX:+UseZGC`
 - Frame Generation is experimental and needs to be enabled by modifying the configuration file.
 - HDR output requires an HDR swapchain and a correctly configured HDR display.
-- When HDR is enabled on Linux, Caustica selects GLFW's native Wayland backend automatically. X11/XWayland surfaces generally do not expose the required HDR10/PQ format.
+- When HDR is enabled on Linux, CausticaLM selects GLFW's native Wayland backend automatically. X11/XWayland surfaces generally do not expose the required HDR10/PQ format.
 - If Minecraft falls back to OpenGL after a crash, re-enable the Vulkan backend
-  before using Caustica again.
+  before using CausticaLM again.
 
 ## Compatibility
 
-Caustica takes over the world renderer, so other mods that heavily modify world
+CausticaLM takes over the world renderer, so other mods that heavily modify world
 rendering, shader pipelines, post-processing, or the Vulkan backend may conflict.
 UI-only mods are more likely to work.
 
 ## Status
 
-Caustica is not a finished renderer yet. Current work focuses on visual
+CausticaLM is not a finished renderer yet. Current work focuses on visual
 correctness, world coverage, stability, and making the SDR/HDR presentation
 paths behave consistently.
 
 ## License
 
-Caustica's project-owned source code and documentation are licensed under the
+CausticaLM's project-owned source code and documentation are licensed under the
 GNU Lesser General Public License v3.0 or later. See [LICENSE.md](LICENSE.md),
 [COPYING](COPYING), and [COPYING.LESSER](COPYING.LESSER).
 
@@ -112,6 +113,5 @@ license terms. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 ## TODO List
 
 - [ ] Nether/End sky, weather, volumetric fog/clouds
-- [ ] NRD + FSR for non-NVIDIA GPUs
 - [ ] LOD
 - [ ] ReSTIR

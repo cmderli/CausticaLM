@@ -3,14 +3,16 @@ package dev.comfyfluffy.caustica.rt.pipeline;
 import com.mojang.blaze3d.vulkan.VulkanCommandEncoder;
 import dev.comfyfluffy.caustica.CausticaConfig;
 import dev.comfyfluffy.caustica.CausticaMod;
+import dev.comfyfluffy.caustica.rt.RtCamera;
 import dev.comfyfluffy.caustica.rt.RtContext;
 import dev.comfyfluffy.caustica.rt.RtDebugLabels;
 import dev.comfyfluffy.caustica.rt.RtGpuExecutor;
-import dev.comfyfluffy.caustica.rt.RtSceneUnits;
 import dev.comfyfluffy.caustica.rt.RtLookPackage;
+import dev.comfyfluffy.caustica.rt.RtSceneUnits;
 import dev.comfyfluffy.caustica.rt.accel.RtBuffer;
 import dev.comfyfluffy.caustica.rt.accel.RtImage;
 import dev.comfyfluffy.caustica.rt.gen.ExposureStateData;
+import org.joml.Matrix4fc;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.VK10;
@@ -24,15 +26,45 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Objects;
 
-/** Owns the display exposure value shared by the RT compositor's display-mapping passes. */
+/**
+ * Owns the display exposure value shared by the RT compositor's display-mapping passes, and the virtual
+ * camera's aperture, shutter time and focus distance that feed it.
+ *
+ * <p>Both live here because they are one quantity split across two controllers. The automatic controller
+ * solves the exposure the metered scene needs; the camera's aperture and shutter time decide how much of
+ * that exposure the lens actually delivers, and the difference is a scale on the same 1x1 exposure image.
+ * Keeping them in one place is what makes "auto" mean the same thing for both: the automatic controller
+ * converges on the target brightness while the auto aperture and shutter snap to the nearest ladder rungs
+ * that realize it.
+ */
 public final class RtExposure {
     private RtImage image;
     private RtBuffer histogram;
+    private RtBuffer focus;
     private RtBuffer state;
     private ReadbackSlot[] stateReadbacks;
     private int stateReadbackIndex = -1;
     private ReadbackSlot pendingStateReadback;
     private ExposureStateData completedState;
+    /**
+     * What the autofocus window measured this frame, before the exponential approach, in blocks. Published for
+     * the depth-of-field diagnostic: a focal plane that is wrong is a measurement problem and one that is merely
+     * late is a smoothing problem, and the latched value alone cannot tell them apart.
+     */
+    /** Non-zero while the autofocus debug view is up; the pass then paints its answer into the depth guide. */
+    private boolean focusDiagnostic;
+
+    public void setFocusDiagnostic(boolean enabled) {
+        focusDiagnostic = enabled;
+    }
+
+    public float measuredFocusBlocks() {
+        return completedState != null ? completedState.measuredFocus() : 0.0f;
+    }
+
+    /** Last measured autofocus distance in blocks, and the traced lens radius, for the throttled diagnostic. */
+    private float meteredFocusBlocks;
+    private float tracedRadiusBlocks;
     private RtExposurePipeline pipeline;
     private boolean logged;
     private long lastFrameNanos;
@@ -41,8 +73,14 @@ public final class RtExposure {
     private ExposureCurve cachedCurve;
     private boolean resetRequested = true;
     private int resetSequence;
-    /** This frame's latched pre-exposure; see {@link #beginFrame(RtGpuExecutor.GraphicsUseWaiter)}. */
+    /** This frame's latched pre-exposure; see {@link #beginFrame(RtGpuExecutor.GraphicsUseWaiter, Matrix4fc)}. */
     private float framePreExposure = 1.0f;
+    /** Projection terms the histogram pass needs to turn the reversed-Z depth guide into a distance. */
+    private float frameProjectionM22 = -1.0f;
+    private float frameProjectionM32 = 0.0f;
+    /** This frame's latched lens; see {@link #optics()}. */
+    private RtCamera.Frame optics = new RtCamera.Frame(2.8f, 1.0f / 60.0f, 8.0f,
+            RtCamera.SENSOR_HEIGHT_METRES, 0.01714f, 0.00612f, 1.0f, 1080);
 
     private static final long DIAG_LOG_INTERVAL_NANOS = 1_000_000_000L;
     private static final int STATE_READBACK_RING = 6;
@@ -70,6 +108,34 @@ public final class RtExposure {
         return state;
     }
 
+    /**
+     * This frame's lens: aperture, shutter time, focus distance and the exposure scale they imply. Latched
+     * once per frame alongside {@link #preExposure()} so the world push, the metering push and the exposure
+     * image all describe the same camera.
+     */
+    public RtCamera.Frame optics() {
+        return optics;
+    }
+
+    /**
+     * What the lens contributes to the display exposure this frame.
+     *
+     * <p>The exposure controller's target multiplies the stored trace, and the stored trace is what the lens was
+     * pointed for, so the two are already balanced: when the auto programme chose the pair, the lens scale is
+     * deliberately left at 1.0. The controller's residual then absorbs the small difference between the rung the
+     * programme could reach and the exposure the scene asked for, which is exactly the job it is built for.
+     *
+     * <p>A manual pair is different: it is the player overriding the exposure, so its true scale is applied and
+     * the image brightens or darkens as the aperture and shutter dictate. Multiplying it in on top of an
+     * exposure the controller had already settled is the intended behaviour there, and the controller does not
+     * fight it because it never meters the display image.
+     */
+    private float lensExposureScale() {
+        boolean autoProgrammeOwnsThePair = "auto".equals(CausticaConfig.Rt.Camera.APERTURE_MODE.get())
+                || "auto".equals(CausticaConfig.Rt.Camera.SHUTTER_MODE.get());
+        return autoProgrammeOwnsThePair ? 1.0f : optics.physicalExposureScale();
+    }
+
     /** Immutable exposure values attached to a residual-exposed EXR capture. */
     public record CaptureMetadata(
             float preExposure,
@@ -78,7 +144,8 @@ public final class RtExposure {
             String mode,
             float evScene,
             float evTarget,
-            float evApplied
+            float evApplied,
+            float physicalExposureScale
     ) {
     }
 
@@ -95,81 +162,84 @@ public final class RtExposure {
         }
         Mode currentMode = mode();
         float pre = preExposure();
-        float absolute = pre * residualExposure;
+        float absolute = pre * residualExposure * lensExposureScale();
         if (currentMode != Mode.AUTO || state == null || state.mapped == 0L) {
             float ev = manualEv();
             return new CaptureMetadata(pre, residualExposure, absolute, currentMode.configName,
-                    Float.NaN, ev, ev);
+                    Float.NaN, ev, ev, lensExposureScale());
         }
         state.invalidate();
         ExposureStateData snapshot = readState();
         return new CaptureMetadata(pre, residualExposure, absolute, currentMode.configName,
-                snapshot.evScene(), snapshot.evTarget(), snapshot.evApplied());
+                snapshot.evScene(), snapshot.evTarget(), snapshot.evApplied(), lensExposureScale());
     }
 
     public void ensureResources(RtContext ctx) {
         if (image == null) {
             image = ctx.createStorageImage(1, 1, VK10.VK_FORMAT_R32_SFLOAT, "display exposure");
         }
-        // The final debug pass always binds the state buffer, including in manual mode. Keep this tiny
-        // resource permanently available; histogram/pipeline allocation remains auto-only.
+        // The state buffer is read by the debug pass and written by the controller, and the histogram,
+        // autofocus scratch and both pipelines are needed whichever exposure mode is selected: the controller
+        // always meters, because its metered scene brightness is what drives the auto aperture, auto shutter
+        // and autofocus programmes in manual mode too.
         if (state == null) {
             state = ctx.createBuffer(ExposureStateData.BYTE_SIZE,
                     VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK10.VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                     true, "exposure state");
             resetAutoHistory();
         }
-        if (mode() == Mode.AUTO) {
-            if (stateReadbacks == null) {
-                ReadbackSlot[] created = new ReadbackSlot[STATE_READBACK_RING];
-                try {
-                    for (int i = 0; i < created.length; i++) {
-                        created[i] = new ReadbackSlot(ctx.createReadbackBuffer(
-                                ExposureStateData.BYTE_SIZE, "exposure state readback " + i));
-                    }
-                } catch (Throwable t) {
-                    for (ReadbackSlot slot : created) {
-                        if (slot != null) {
-                            slot.buffer.destroy();
-                        }
-                    }
-                    throw t;
+        if (stateReadbacks == null) {
+            ReadbackSlot[] created = new ReadbackSlot[STATE_READBACK_RING];
+            try {
+                for (int i = 0; i < created.length; i++) {
+                    created[i] = new ReadbackSlot(ctx.createReadbackBuffer(
+                            ExposureStateData.BYTE_SIZE, "exposure state readback " + i));
                 }
-                stateReadbacks = created;
+            } catch (Throwable t) {
+                for (ReadbackSlot slot : created) {
+                    if (slot != null) {
+                        slot.buffer.destroy();
+                    }
+                }
+                throw t;
             }
-            if (histogram == null) {
-                // Separate ordinary-surface/sky/emissive histograms let resolve enforce both
-                // population caps exactly without a second full-image dispatch.
-                histogram = ctx.createBuffer(768L * Integer.BYTES,
-                        VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK10.VK_BUFFER_USAGE_TRANSFER_DST_BIT, false,
-                        "exposure histogram");
-            }
-            if (pipeline == null) {
-                pipeline = RtExposurePipeline.create(ctx);
-            }
+            stateReadbacks = created;
+        }
+        if (histogram == null) {
+            // Separate ordinary-surface/sky/emissive histograms let resolve enforce both
+            // population caps exactly without a second full-image dispatch.
+            histogram = ctx.createBuffer(768L * Integer.BYTES,
+                    VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK10.VK_BUFFER_USAGE_TRANSFER_DST_BIT, false,
+                    "exposure histogram");
+        }
+        if (focus == null) {
+            // Lane 0 is the autofocus distance and lane 1 its weight: cleared by the histogram pass, measured by
+            // the autofocus pass, read by the resolve. The lanes past those carry the window's own geometry --
+            // the guide's size, the centre it was given and the corner it resolved to -- which is the only way to
+            // tell "the measurement is wrong" from "the window is not where the code believes it is".
+            focus = ctx.createBuffer(10L * Float.BYTES,
+                    VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false, "exposure focus");
+        }
+        if (pipeline == null) {
+            pipeline = RtExposurePipeline.create(ctx);
         }
         logOnce();
     }
 
+    /**
+     * Meters the frame and publishes the exposure image.
+     *
+     * <p>The histogram and the resolve run in both exposure modes. Manual mode ignores the controller's
+     * resolved value and writes its own, but the metered scene still has to reach the host: it is the input
+     * to the auto aperture, auto shutter and autofocus programmes, and those are lens decisions rather than
+     * exposure decisions, so they follow the scene whatever the exposure mode is.
+     */
     public void record(RtContext ctx, VkCommandBuffer cmd, MemoryStack stack,
                        RtImage traceColor, RtImage guideDepth, RtImage guideAlbedo) {
         if (image == null) {
             throw new IllegalStateException("RT exposure image not created");
         }
-        if (mode() == Mode.AUTO) {
-            recordAuto(ctx, cmd, stack, traceColor, guideDepth, guideAlbedo);
-            return;
-        }
-        try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "exposure manual write")) {
-            VkClearColorValue color = VkClearColorValue.calloc(stack);
-            // Residual, not absolute: raygen already applied preExposure (which in manual mode IS
-            // manualExposureScale, making this exactly 1.0). See preExposure().
-            color.float32(0, manualExposureScale() / Math.max(preExposure(), 1.0e-12f));
-            VkImageSubresourceRange.Buffer range = VkImageSubresourceRange.calloc(1, stack);
-            range.get(0).aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
-                    .baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1);
-            VK10.vkCmdClearColorImage(cmd, image.image, VK10.VK_IMAGE_LAYOUT_GENERAL, color, range);
-        }
+        recordAuto(ctx, cmd, stack, traceColor, guideDepth, guideAlbedo);
     }
 
     public void destroy() {
@@ -180,6 +250,10 @@ public final class RtExposure {
         if (histogram != null) {
             histogram.destroy();
             histogram = null;
+        }
+        if (focus != null) {
+            focus.destroy();
+            focus = null;
         }
         if (state != null) {
             state.destroy();
@@ -201,6 +275,7 @@ public final class RtExposure {
         pendingStateReadback = null;
         completedState = null;
         framePreExposure = 1.0f;
+        RtCamera.reset();
     }
 
     // Manual mode's exposure scale, also used as the auto-history seed (resetAutoHistory) so the very
@@ -211,17 +286,20 @@ public final class RtExposure {
 
     private void recordAuto(RtContext ctx, VkCommandBuffer cmd, MemoryStack stack,
                             RtImage traceColor, RtImage guideDepth, RtImage guideAlbedo) {
-        if (pipeline == null || histogram == null || state == null) {
+        if (pipeline == null || histogram == null || focus == null || state == null) {
             throw new IllegalStateException("RT auto exposure resources not created");
         }
         pipeline.setResources(traceColor.view, guideDepth.view, guideAlbedo.view,
-                histogram, image.view, state);
+                histogram, focus, image.view, state);
         try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "exposure histogram clear")) {
             VK10.vkCmdFillBuffer(cmd, histogram.handle, 0, histogram.size, 0);
         }
         VulkanCommandEncoder.memoryBarrier(cmd, stack);
         AutoConfig config = autoConfig();
         pipeline.dispatchHistogram(cmd, traceColor.width, traceColor.height, config);
+        // The autofocus point runs after the histogram, which is what clears the scratch it reports into, and
+        // before the resolve, which is what reads it.
+        pipeline.dispatchAutofocus(cmd, traceColor.width, traceColor.height, config, focusDiagnostic);
         VulkanCommandEncoder.memoryBarrier(cmd, stack);
         pipeline.dispatchResolve(cmd, config, frameTimeSeconds());
         logDiagnosticsIfDue();
@@ -232,7 +310,7 @@ public final class RtExposure {
      * consumed until its graphics timeline value completes, so the host never races the live storage buffer.
      */
     public void recordStateReadback(VkCommandBuffer cmd, MemoryStack stack) {
-        if (mode() != Mode.AUTO || pendingStateReadback == null) {
+        if (pendingStateReadback == null) {
             return;
         }
         VkBufferMemoryBarrier.Buffer toTransfer = VkBufferMemoryBarrier.calloc(1, stack);
@@ -298,10 +376,14 @@ public final class RtExposure {
         // across frames regardless of what preExposure happened to be.
         CausticaMod.LOGGER.info(
                 "RT exposure diag: evScene(EV100)={} evTarget={}{} evApplied={} preExposure={} "
+                        + "aperture=f/{} shutter=1/{} physical={} focus={} "
                         + "clipLow={}% clipHigh={}% skyScale={} skyWeight={}% emissiveScale={} "
                         + "emissiveWeight={}% curveComp={} effectiveSlope={}",
                 fmt(evScene), fmt(evTarget), pinnedLow ? " (at minEv clamp)" : pinnedHigh ? " (at maxEv clamp)" : "",
-                fmt(evApplied), fmt(preExposure()), fmt(clipLowFrac * 100.0f), fmt(clipHighFrac * 100.0f),
+                fmt(evApplied), fmt(preExposure()),
+                fmt(optics.aperture()), fmt(1.0f / Math.max(optics.shutterSeconds(), 1.0e-6f)),
+                fmt(optics.physicalExposureScale()), fmt(optics.focusDistanceBlocks()),
+                fmt(clipLowFrac * 100.0f), fmt(clipHighFrac * 100.0f),
                 fmt(skyScale), fmt(skyFrac * 100.0f), fmt(emissiveScale),
                 fmt(emissiveFrac * 100.0f), fmt(curveCompensation), fmt(effectiveSlope));
     }
@@ -321,12 +403,17 @@ public final class RtExposure {
         if (state == null) {
             return null;
         }
+        String lens = String.format(java.util.Locale.ROOT, "f/%s 1/%s s focus %s lens x%s",
+                fmt(optics.aperture()), fmt(1.0f / Math.max(optics.shutterSeconds(), 1.0e-6f)),
+                Float.isFinite(optics.focusDistanceBlocks())
+                        ? fmt(optics.focusDistanceBlocks()) + " m" : "inf",
+                fmt(optics.physicalExposureScale()));
         if (mode() != Mode.AUTO) {
-            return String.format(java.util.Locale.ROOT, "Exposure: manual %s EV", fmt(manualEv()));
+            return String.format(java.util.Locale.ROOT, "Exposure: manual %s EV, %s", fmt(manualEv()), lens);
         }
         ExposureStateData snapshot = completedState;
         if (snapshot == null) {
-            return null;
+            return "Exposure: " + lens;
         }
         float evScene = snapshot.evScene();
         float evTarget = snapshot.evTarget();
@@ -334,8 +421,8 @@ public final class RtExposure {
         AutoConfig cfg = autoConfig();
         String clamp = evTarget <= cfg.minEv() + 0.01f ? " (min clamp)"
                 : evTarget >= cfg.maxEv() - 0.01f ? " (max clamp)" : "";
-        return String.format(java.util.Locale.ROOT, "Exposure: EV100 %s, applied %s EV%s",
-                fmt(evScene), fmt(evApplied), clamp);
+        return String.format(java.util.Locale.ROOT, "Exposure: EV100 %s, applied %s EV%s, %s",
+                fmt(evScene), fmt(evApplied), clamp, lens);
     }
 
     private float frameTimeSeconds() {
@@ -358,7 +445,7 @@ public final class RtExposure {
         new ExposureStateData(
                 manualExposureScale(), 0,
                 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0,
-                1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f
+                1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f
         ).write(stateDataBuffer());
         state.flush(0L, ExposureStateData.BYTE_SIZE);
         lastFrameNanos = 0L;
@@ -413,19 +500,32 @@ public final class RtExposure {
                 CausticaConfig.Rt.Exposure.EMISSIVE_WEIGHT_CAP.value(),
                 curveConfig(),
                 preExposure(),
-                resetSequence);
+                resetSequence,
+                lensExposureScale(),
+                mode() == Mode.AUTO ? 0.0f : manualExposureScale(),
+                frameProjectionM22,
+                frameProjectionM32,
+                RtCamera.FOCUS_HALFLIFE_SECONDS);
     }
 
     /**
-     * Latches this frame's pre-exposure. MUST be called once per frame before the world push
+     * Latches this frame's pre-exposure and lens. MUST be called once per frame before the world push
      * constants are written, and must not be re-latched afterwards.
      *
      * <p>The raygen multiply and the resolve's divide have to use the <em>same</em> value or they
      * stop cancelling and the frame comes out mis-scaled. Both read {@link #preExposure()}, but at
      * different points in CPU time. The completed readback can be several frames old, so latching once
      * ensures both consumers use one prediction; the residual absorbs whatever it failed to predict.
+     *
+     * <p>The lens is latched here for the same reason: the world push carries its aperture and focus
+     * distance, the display pass carries the exposure scale they imply, and a frame in which those two
+     * disagreed would focus one image and expose another.
+     *
+     * @param projection   this frame's projection matrix, whose vertical FOV sets the focal length
+     * @param renderHeight the height the trace runs at, which sizes the blurred-circle cap
      */
-    public void beginFrame(RtGpuExecutor.GraphicsUseWaiter graphicsUseWaiter) {
+    public void beginFrame(RtGpuExecutor.GraphicsUseWaiter graphicsUseWaiter, Matrix4fc projection,
+                           int renderHeight) {
         Mode currentMode = mode();
         boolean reset = currentMode == Mode.AUTO && resetRequested;
         if (reset) {
@@ -436,7 +536,7 @@ public final class RtExposure {
         }
 
         pendingStateReadback = null;
-        if (currentMode == Mode.AUTO && stateReadbacks != null) {
+        if (stateReadbacks != null) {
             stateReadbackIndex = (stateReadbackIndex + 1) % stateReadbacks.length;
             ReadbackSlot slot = stateReadbacks[stateReadbackIndex];
             graphicsUseWaiter.await(slot.graphicsUse);
@@ -448,9 +548,66 @@ public final class RtExposure {
             pendingStateReadback = slot;
         }
 
+        frameProjectionM22 = projection.m22();
+        frameProjectionM32 = projection.m32();
         // On a reset frame the previous world's exposure is a poor storage-scale prediction. Unity is
         // neutral and the resolve removes it exactly; subsequent frames resume last-frame prediction.
         framePreExposure = reset ? 1.0f : computePreExposure();
+        latchOptics(projection, renderHeight);
+    }
+
+    /**
+     * Solves the lens for this frame. The lens is aimed at the exposure the metered scene needs — the same
+     * quantity the controller's own target is built from — rather than at the controller's remaining correction.
+     *
+     * <p>That distinction is what keeps the two loops from chasing each other. The controller meters the
+     * pre-exposure image, so its output never feeds its own input, but {@code evTarget - evApplied} is only zero
+     * once it has converged: while it adapts, that difference sweeps across its range, and a lens driven by it
+     * racks the iris back and forth on every scene change and hands the difference back through the display
+     * scale. The scene's own EV100 is a property of the frame rather than of the controller, so driving from it
+     * makes the lens settle at a contribution of exactly 1.0 instead of oscillating around it.
+     */
+    private void latchOptics(Matrix4fc projection, int renderHeight) {
+        float meteredFocus = 0.0f;
+        float lensEv100 = Float.NaN;
+        if (completedState != null) {
+            meteredFocus = completedState.focusDistance();
+            // evScene is the absolute EV100 of the metered scene. An unwritten state buffer reads as zero, which
+            // is not a brightness any world has.
+            float evScene = completedState.evScene();
+            if (Float.isFinite(evScene) && evScene != 0.0f) {
+                lensEv100 = lensTargetEv100(evScene);
+            }
+        }
+        meteredFocusBlocks = meteredFocus;
+        optics = RtCamera.latch(projection, lensEv100, meteredFocus, renderHeight);
+        // What the primary pass will actually use as its lens radius, so the diagnostic shows the split between
+        // the traced disc and the one the gather supplies rather than only their sum.
+        tracedRadiusBlocks = CausticaConfig.Rt.Camera.depthOfField()
+                ? optics.defocusScaleBlocks() * RtCamera.tracedDiscFraction(
+                        optics.defocusScaleBlocks() * optics.renderHeight() / RtCamera.SENSOR_HEIGHT_METRES,
+                        CausticaConfig.Rt.Camera.physicalDepthOfField()
+                                ? RtCamera.TRACED_DISC_PIXELS : 0.0f)
+                : 0.0f;
+    }
+
+    /**
+     * The EV100 the virtual lens exposes for: the metered scene's own value, shifted onto the lens' scale so that
+     * the reference scene is the one the reference pair is neutral for.
+     *
+     * <p>The lens' scale is 1.0 for f/2.8 at 1/60 s and is what a MANUAL pair contributes to the display
+     * exposure. Under the auto programme it contributes nothing (see {@link #lensExposureScale}), so this target
+     * only decides which rung the programme picks: it has to follow the scene's brightness, so the iris opens in
+     * a cave and stops down at noon.
+     *
+     * <p>The shift is {@code REFERENCE_EV100 - EV100_OFFSET} rather than either constant alone. The lens' zero is
+     * the reference pair's own EV in the camera's scale; the scene convention's zero is where a 1 cd/m² surface
+     * sits. Subtracting the offset maps the scene onto the lens, and the reference puts the neutral point at the
+     * pair the auto programme treats as its default. Omitting the offset (or using the reference twice) biases
+     * every frame by a constant number of stops, which is what walked the image toward black.
+     */
+    public static float lensTargetEv100(float evScene) {
+        return evScene + CausticaConfig.Rt.Camera.REFERENCE_EV100 - RtSceneUnits.EV100_OFFSET;
     }
 
     /** Request a GPU-side history reset on the next auto-exposure frame. */
@@ -505,7 +662,9 @@ public final class RtExposure {
                       float lowPercentile, float highPercentile, int stride,
                       float centerWeightSigma, float centerWeightFloor, float skyWeightCap,
                       float emissiveWeightCap,
-                      ExposureCurve curve, float preExposure, int resetSequence) {
+                      ExposureCurve curve, float preExposure, int resetSequence,
+                      float physicalScale, float manualScale, float projM22, float projM32,
+                      float focusHalflifeSeconds) {
         /**
          * Offset taking the resolve's {@code log2(metered stored luminance)} to EV100. The metered
          * buffer holds {@code L * preExposure}, so the pre-exposure has to come back out before the

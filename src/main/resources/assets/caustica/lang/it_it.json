@@ -3,7 +3,9 @@
 
 	"caustica.options.rt.exposureMode": "Esposizione",
 	"caustica.options.rt.exposureMode.tooltip": "Come l'immagine con ray tracing viene mappata sulla luminosità del display. Auto si adatta alla luminanza della scena; Manuale usa direttamente il valore di esposizione.",
+
 	"caustica.options.rt.exposureMode.auto": "Auto",
+
 	"caustica.options.rt.exposureMode.manual": "Manuale",
 
 	"caustica.options.rt.manualEv": "Esposizione EV",
@@ -29,8 +31,10 @@
 
 	"caustica.options.rt.motionBlur": "Sfocatura di movimento",
 	"caustica.options.rt.motionBlur.tooltip": "Sfoca l'immagine lungo i vettori di movimento reali di ogni pixel durante l'intervallo dell'otturatore. Le rotazioni della camera e gli oggetti in movimento lasciano scie come con un otturatore cinematografico; il costo è una passata alla risoluzione dello schermo.",
+
 	"caustica.options.rt.motionBlurShutter": "Angolo dell'otturatore",
 	"caustica.options.rt.motionBlurShutter.tooltip": "Quanta parte dell'intervallo tra fotogrammi l'otturatore virtuale resta aperto, in gradi: 180 è lo standard cinematografico (metà intervallo), 360 lo lascia aperto per tutto il tempo, 0 disattiva la scia.",
+
 	"caustica.options.rt.motionBlurSamples": "Campioni di sfocatura di movimento",
 	"caustica.options.rt.motionBlurSamples.tooltip": "Campioni mediati lungo la scia. Più sono, più il movimento rapido risulta fluido; 8 è un buon valore predefinito.",
 
@@ -41,13 +45,126 @@
 	"caustica.options.rt.hdrPeak.tooltip": "Luminosità assoluta (in nit) verso cui sfumano le alte luci. Impostala sulla luminosità HDR di picco del display.",
 
 	"caustica.options.rt.debugView": "Vista di debug",
-	"caustica.options.rt.debugView.tooltip": "Visualizza un buffer intermedio del ray tracing invece dell'immagine finale.",
+	"caustica.options.rt.debugView.tooltip": "Ispeziona i buffer del ray tracing e la diagnostica dell'esposizione dopo il rendering del frame normale.",
+
 	"caustica.options.rt.debugView.0": "Disattivato",
+
 	"caustica.options.rt.debugView.1": "Normali",
+
 	"caustica.options.rt.debugView.2": "Albedo",
+
 	"caustica.options.rt.debugView.3": "Profondità",
+
 	"caustica.options.rt.debugView.4": "Rugosità",
+
 	"caustica.options.rt.debugView.5": "Movimento",
+
 	"caustica.options.rt.debugView.6": "Speculare",
-	"caustica.options.rt.debugView.7": "Movimento speculare"
+
+	"caustica.options.rt.debugView.7": "Movimento speculare",
+
+	"caustica.options.rt.gamma": "Gamma",
+	"caustica.options.rt.gamma.tooltip": "Gamma di luminanza dopo la trasformazione. Valori inferiori a 1,00 schiariscono ombre e mezzitoni preservando il nero, il bianco e i rapporti tra i colori.",
+
+	"caustica.options.rt.depthOfField": "Profondità di campo",
+	"caustica.options.rt.depthOfField.tooltip": "Traccia i raggi primari attraverso il diaframma della camera, così ciò che è fuori fuoco si sfoca come farebbe un obiettivo reale. L'opzione Campo visivo imposta la lunghezza focale, quindi un FOV stretto mette a fuoco più strettamente a parità di diaframma e distanza di messa a fuoco.",
+
+	"caustica.options.rt.dofMode": "Modalità profondità di campo",
+	"caustica.options.rt.dofMode.tooltip": "Come viene prodotto lo sfocato. Semplice raccoglie un cerchio di confusione dall’immagine finale: stabile ed economico, e un primo piano nitido viene composto sopra uno sfondo sfocato invece di esservi trascinato. Fisico fa uscire i raggi primari attraverso l’apertura, quindi lo sfocato è vero bokeh dell’obiettivo, al costo di raggi e di campionamento visibile con aperture grandi.",
+
+	"caustica.options.rt.dofMode.simple": "Semplice",
+
+	"caustica.options.rt.dofMode.physical": "Fisico",
+
+	"caustica.options.rt.dofMode.artistic": "Artistico",
+
+	"caustica.options.rt.dofArtisticBlur": "Intensità sfocatura",
+	"caustica.options.rt.dofArtisticBlur.tooltip": "Sfocatura massima disegnata dalla modalità artistica, in percentuale dell’altezza del fotogramma. È tutto il controllo di intensità e significa la stessa cosa con qualsiasi campo visivo, risoluzione e distanza di fuoco. Sotto l’1% è una separazione discreta, 1-2% uno sfondo nettamente morbido, e oltre il 3% diventa un effetto che inghiotte tutto tranne il piano di fuoco.",
+
+
+	"caustica.options.rt.dofMaxBlur": "Sfocatura max.",
+	"caustica.options.rt.dofMaxBlur.tooltip": "Disco sfocato più grande, in percentuale dell’altezza del fotogramma. Un obiettivo luminoso messo a fuoco da vicino sfoca lo sfondo più dell’altezza del fotogramma; senza un limite tutto ciò che sta oltre un metro condividerebbe la stessa sfocatura e l’immagine apparirebbe molle ovunque invece che un soggetto nitido su uno sfondo sfocato. Alzalo per approfondire la sfocatura, abbassalo per mantenere più parte nitida.",
+
+	"caustica.options.rt.dofSamples": "Campioni di profondità di campo",
+	"caustica.options.rt.dofSamples.tooltip": "Punti dell’apertura attraverso cui traccia ogni pixel. Il tracciamento copre solo un piccolo disco di confusione; il resto dell’apertura viene raccolto dall’immagine finale in un passaggio successivo, quindi questo valore evita che la parte tracciata sfarfallii invece di stabilire l’ampiezza della sfocatura. Ogni campione aggiuntivo costa un raggio per pixel, non un percorso completo.",
+
+	"caustica.options.rt.apertureMode": "Diaframma",
+	"caustica.options.rt.apertureMode.tooltip": "Auto calcola il numero f dalla scena misurata in ogni fotogramma; Manuale lo fissa al valore di Diaframma, esattamente come la ghiera di un obiettivo. I diaframmi più aperti (numeri f piccoli) sfocano di più lo sfondo e lasciano entrare più luce.",
+
+	"caustica.options.rt.apertureMode.auto": "Auto",
+
+	"caustica.options.rt.apertureMode.manual": "Manuale",
+
+	"caustica.options.rt.aperture": "Dimensione del diaframma",
+	"caustica.options.rt.aperture.tooltip": "Il numero f: la lunghezza focale divisa per il diametro della pupilla d'ingresso. Più aperto (numeri più piccoli) dà una profondità di campo più ridotta e un'immagine più luminosa; più chiuso (numeri più grandi) mantiene più parti della scena a fuoco e scurisce l'immagine.",
+
+	"caustica.options.rt.shutterMode": "Modalità tempo otturatore",
+	"caustica.options.rt.shutterMode.tooltip": "Auto calcola il tempo dell'otturatore dalla scena misurata in ogni fotogramma; Manuale lo fissa al valore di Tempo dell'otturatore.",
+
+	"caustica.options.rt.shutterMode.auto": "Auto",
+
+	"caustica.options.rt.shutterMode.manual": "Manuale",
+
+	"caustica.options.rt.shutterTime": "Tempo dell'otturatore",
+	"caustica.options.rt.shutterTime.tooltip": "Per quanto tempo resta aperto l'otturatore virtuale. Tempi più lunghi schiariscono l'immagine (e, con la Sfocatura di movimento attiva, allungano la scia); tempi più brevi la scuriscono.",
+
+	"caustica.options.rt.focusMode": "Messa a fuoco",
+	"caustica.options.rt.focusMode.tooltip": "Auto mette a fuoco ciò che inquadra il centro dello schermo, come il punto di autofocus centrale di una fotocamera; Manuale mette a fuoco a una distanza fissa.",
+
+	"caustica.options.rt.focusMode.auto": "Auto",
+
+	"caustica.options.rt.focusMode.manual": "Manuale",
+
+	"caustica.options.rt.focusDistance": "Distanza di messa a fuoco",
+	"caustica.options.rt.focusDistance.tooltip": "A che distanza dalla camera si trova il piano nitido, in metri. Tutto ciò che è a quella distanza resta nitido e tutto ciò che è più vicino o più lontano si sfoca di una quantità stabilita dal diaframma.",
+
+	"caustica.options.rt.autoValue": " (auto)",
+
+	"caustica.options.rt.hdrUiBrightness": "Luminosità UI HDR",
+	"caustica.options.rt.hdrUiBrightness.tooltip": "Luminosità assoluta (in nit) assegnata all'interfaccia in stile SDR su un display HDR. BT.2408 pone il bianco della grafica SDR a 203 nit; la trasformazione di uscita HDR ACES pone una superficie bianca nel mondo vicino a 107 nit con un picco di 1000 nit.",
+
+	"caustica.options.rt.denoiser": "Denoiser",
+	"caustica.options.rt.denoiser.tooltip": "Quale denoiser ripulisce l'immagine con path tracing. Auto sceglie il migliore che questa macchina può eseguire. DLSS Ray Reconstruction richiede una GPU NVIDIA RTX, NRD richiede la sua libreria nativa, e il denoiser integrato funziona sempre ma è più morbido perché non ha una cronologia dei fotogrammi. Disattivato mostra l'immagine tracciata grezza.",
+
+	"caustica.options.rt.denoiser.auto": "Auto",
+
+	"caustica.options.rt.denoiser.dlss-rr": "DLSS Ray Reconstruction",
+
+	"caustica.options.rt.denoiser.nrd": "NRD",
+
+	"caustica.options.rt.denoiser.builtin": "Integrato",
+
+	"caustica.options.rt.denoiser.off": "Disattivato",
+
+	"caustica.options.rt.superResolutionMethod": "Metodo di super risoluzione",
+	"caustica.options.rt.superResolutionMethod.tooltip": "Quale upscaler porta alla tua schermata l'immagine alla risoluzione di rendering. Auto usa FSR quando il suo runtime è installato, altrimenti il resolve bilineare integrato. Il bilineare funziona sempre ma è più morbido.",
+
+	"caustica.options.rt.superResolutionMethod.auto": "Auto",
+
+	"caustica.options.rt.superResolutionMethod.fsr": "FSR",
+
+	"caustica.options.rt.superResolutionMethod.bilinear": "Bilineare",
+
+	"caustica.options.rt.superResolution": "Super risoluzione",
+	"caustica.options.rt.superResolution.tooltip": "Risoluzione di rendering con cui il mondo viene tracciato prima di essere scalato sullo schermo. Le modalità più basse renderizzano meno pixel e scalano in modo più aggressivo per una frequenza dei fotogrammi più alta; le modalità più alte renderizzano più pixel per un'immagine più nitida. DLSS Ray Reconstruction usa le proprie modalità equivalenti.",
+
+	"caustica.options.rt.superResolution.0": "AA nativa",
+
+	"caustica.options.rt.superResolution.1": "Qualità",
+
+	"caustica.options.rt.superResolution.2": "Bilanciato",
+
+	"caustica.options.rt.superResolution.3": "Prestazioni",
+
+	"caustica.options.rt.superResolution.4": "Prestazioni ultra",
+
+	"caustica.options.rt.debugView.8": "Falso colore dell'esposizione",
+
+	"caustica.options.rt.debugView.9": "Peso della misurazione",
+
+	"caustica.options.rt.debugView.10": "Cerchio di confusione",
+
+	"caustica.options.rt.debugView.11": "Punto di messa a fuoco",
+
+	"caustica.options.rt.debugView.12": "Raggio sfocatura (misurato)"
 }

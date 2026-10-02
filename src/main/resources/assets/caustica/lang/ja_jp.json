@@ -3,7 +3,9 @@
 
 	"caustica.options.rt.exposureMode": "露出",
 	"caustica.options.rt.exposureMode.tooltip": "レイトレーシング画像をディスプレイの明るさにどう変換するかを設定します。自動はシーンの輝度に合わせて調整し、手動は露出値をそのまま使用します。",
+
 	"caustica.options.rt.exposureMode.auto": "自動",
+
 	"caustica.options.rt.exposureMode.manual": "手動",
 
 	"caustica.options.rt.manualEv": "露出 EV",
@@ -29,8 +31,10 @@
 
 	"caustica.options.rt.motionBlur": "モーションブラー",
 	"caustica.options.rt.motionBlur.tooltip": "各ピクセルの実際のモーションベクターに沿って、シャッター時間ぶん画像をぼかします。カメラの回転や動く物体がフィルムのシャッターのように尾を引きます。コストは表示解像度のパス1回です。",
+
 	"caustica.options.rt.motionBlurShutter": "シャッター角度",
 	"caustica.options.rt.motionBlurShutter.tooltip": "仮想シャッターがフレーム間隔のうち開いている割合（度）。180 がフィルム標準（半分）、360 で常時開放、0 で尾を引かなくなります。",
+
 	"caustica.options.rt.motionBlurSamples": "モーションブラーのサンプル数",
 	"caustica.options.rt.motionBlurSamples.tooltip": "尾に沿って平均するサンプル数です。多いほど速い動きが滑らかになります。8 が適切な既定値です。",
 
@@ -41,13 +45,126 @@
 	"caustica.options.rt.hdrPeak.tooltip": "ハイライトがロールオフする先の絶対輝度（nits）です。ディスプレイの HDR ピーク輝度に設定してください。",
 
 	"caustica.options.rt.debugView": "デバッグ表示",
-	"caustica.options.rt.debugView.tooltip": "最終画像の代わりに、レイトレーシングの中間バッファを可視化します。",
+	"caustica.options.rt.debugView.tooltip": "通常のフレームを描画した後で、レイトレーシングのバッファと露出の診断情報を確認します。",
+
 	"caustica.options.rt.debugView.0": "オフ",
+
 	"caustica.options.rt.debugView.1": "法線",
+
 	"caustica.options.rt.debugView.2": "アルベド",
+
 	"caustica.options.rt.debugView.3": "深度",
+
 	"caustica.options.rt.debugView.4": "粗さ",
+
 	"caustica.options.rt.debugView.5": "モーション",
+
 	"caustica.options.rt.debugView.6": "スペキュラー",
-	"caustica.options.rt.debugView.7": "スペキュラーモーション"
+
+	"caustica.options.rt.debugView.7": "スペキュラーモーション",
+
+	"caustica.options.rt.gamma": "ガンマ",
+	"caustica.options.rt.gamma.tooltip": "トランスフォーム後の輝度ガンマです。1.00 未満の値は、黒・白・色の比率を保ったままシャドウと中間調を明るくします。",
+
+	"caustica.options.rt.depthOfField": "被写界深度",
+	"caustica.options.rt.depthOfField.tooltip": "カメラの絞りを通してプライマリレイをトレースするため、ピントの外れた部分が実際のレンズのようにぼけます。焦点距離は視野角の設定で決まるので、同じ絞りとフォーカス距離では FOV が狭いほどピントの合う範囲が狭くなります。",
+
+	"caustica.options.rt.dofMode": "被写界深度モード",
+	"caustica.options.rt.dofMode.tooltip": "ぼけの作り方です。シンプルは完成した画像から錯乱円を集めます。安定して軽く、手前のくっきりした物はぼけた背景に合成され、引き伸ばされません。物理は主光線を絞りから出発させるので、ぼけはレンズ本来のボケになりますが、光線の負荷と、大きく開けたときの目立つサンプリングを伴います。",
+
+	"caustica.options.rt.dofMode.simple": "シンプル",
+
+	"caustica.options.rt.dofMode.physical": "物理",
+
+	"caustica.options.rt.dofMode.artistic": "アーティスティック",
+
+	"caustica.options.rt.dofArtisticBlur": "ぼけの強さ",
+	"caustica.options.rt.dofArtisticBlur.tooltip": "アーティスティックモードが描く最大のぼけ量を、画面の高さに対する割合で指定します。強さの調整はこれ一つで、画角・解像度・ピント距離が変わっても意味は同じです。1% 未満は控えめな分離、1～2% は明確に柔らかい背景、3% を超えるとピント面以外をすべて飲み込む特殊効果になります。",
+
+
+	"caustica.options.rt.dofMaxBlur": "最大ぼけ量",
+	"caustica.options.rt.dofMaxBlur.tooltip": "画面の高さに対する最大のぼけ円盤の割合です。明るいレンズで近距離に合わせると、遠景は画面の高さ以上にぼけます。上限がないと 1 m より先がすべて同じぼけ量になり、くっきりした主役と柔らかい背景ではなく画面全体がぼやけて見えます。上げるとぼけが深く、下げるとくっきり残る範囲が広がります。",
+
+	"caustica.options.rt.dofSamples": "被写界深度のサンプル数",
+	"caustica.options.rt.dofSamples.tooltip": "各ピクセルが通す絞りの点の数です。光線追跡が覆うのは小さな錯乱円だけで、残りの絞りは後段のパスが完成した画像から集めます。つまりこの値はぼけの大きさを決めるものではなく、追跡される部分のちらつきを抑えるものです。1 点増えるごとに 1 ピクセルあたり光路 1 本ぶんではなく光線 1 本ぶんの負荷が増えます。",
+
+	"caustica.options.rt.apertureMode": "絞り",
+	"caustica.options.rt.apertureMode.tooltip": "自動はフレームごとに測光したシーンから F 値を算出し、手動はレンズの絞り環のように絞り値へ固定します。開放寄りの絞り（小さい F 値）ほど背景をより大きくぼかし、光をより多く取り込みます。",
+
+	"caustica.options.rt.apertureMode.auto": "自動",
+
+	"caustica.options.rt.apertureMode.manual": "手動",
+
+	"caustica.options.rt.aperture": "絞り値",
+	"caustica.options.rt.aperture.tooltip": "F 値は、焦点距離を入射瞳の直径で割った値です。開放寄り（小さい値）ほど被写界深度が浅く明るい画像になり、絞り込み（大きい値）ほどシーンの広い範囲にピントが合い、画像は暗くなります。",
+
+	"caustica.options.rt.shutterMode": "シャッター時間モード",
+	"caustica.options.rt.shutterMode.tooltip": "自動はフレームごとに測光したシーンからシャッター時間を算出し、手動はシャッター時間の値に固定します。",
+
+	"caustica.options.rt.shutterMode.auto": "自動",
+
+	"caustica.options.rt.shutterMode.manual": "手動",
+
+	"caustica.options.rt.shutterTime": "シャッター時間",
+	"caustica.options.rt.shutterTime.tooltip": "仮想シャッターが開いている時間です。長いほど画像は明るくなり（モーションブラーが有効な場合は尾も長くなり）、短いほど暗くなります。",
+
+	"caustica.options.rt.focusMode": "フォーカス",
+	"caustica.options.rt.focusMode.tooltip": "自動はカメラの中央 AF 測距点のように、画面中央が指している対象にピントを合わせます。手動では固定距離にピントを合わせます。",
+
+	"caustica.options.rt.focusMode.auto": "自動",
+
+	"caustica.options.rt.focusMode.manual": "手動",
+
+	"caustica.options.rt.focusDistance": "フォーカス距離",
+	"caustica.options.rt.focusDistance.tooltip": "ピントの合う面がカメラからどれだけ離れているかをメートル単位で指定します。その距離にあるものは鮮明なまま、それより近くても遠くても、絞りで決まる量だけぼけます。",
+
+	"caustica.options.rt.autoValue": " (自動)",
+
+	"caustica.options.rt.hdrUiBrightness": "HDR UI の明るさ",
+	"caustica.options.rt.hdrUiBrightness.tooltip": "HDR ディスプレイ上で、SDR 前提で作られた UI に割り当てる絶対輝度（nits）です。BT.2408 では SDR グラフィックスの白を 203 nits としており、ACES の HDR 出力トランスフォームではピーク 1000 nits のときワールド内の白い面が約 107 nits になります。",
+
+	"caustica.options.rt.denoiser": "デノイザー",
+	"caustica.options.rt.denoiser.tooltip": "パストレーシング画像のノイズをどのデノイザーで除去するかを選びます。自動はこのマシンで実行できる最良のものを選びます。DLSS レイリコンストラクションには NVIDIA RTX GPU が必要で、NRD にはネイティブライブラリが必要です。内蔵デノイザーは常に動作しますが、フレーム履歴を持たないためよりぼやけた仕上がりになります。オフではトレースした生の画像を表示します。",
+
+	"caustica.options.rt.denoiser.auto": "自動",
+
+	"caustica.options.rt.denoiser.dlss-rr": "DLSS レイリコンストラクション",
+
+	"caustica.options.rt.denoiser.nrd": "NRD",
+
+	"caustica.options.rt.denoiser.builtin": "内蔵",
+
+	"caustica.options.rt.denoiser.off": "オフ",
+
+	"caustica.options.rt.superResolutionMethod": "超解像方式",
+	"caustica.options.rt.superResolutionMethod.tooltip": "レンダリング解像度の画像を画面に拡大するアップスケーラーを選びます。自動は FSR のランタイムがインストールされていれば FSR を、なければ内蔵のバイリニア解決を使用します。バイリニアは常に動作しますが、よりぼやけた仕上がりになります。",
+
+	"caustica.options.rt.superResolutionMethod.auto": "自動",
+
+	"caustica.options.rt.superResolutionMethod.fsr": "FSR",
+
+	"caustica.options.rt.superResolutionMethod.bilinear": "Bilinear",
+
+	"caustica.options.rt.superResolution": "超解像",
+	"caustica.options.rt.superResolution.tooltip": "画面に拡大する前の、ワールドをトレースするレンダリング解像度です。低いモードほど描画ピクセル数が少なく積極的に拡大するためフレームレートが上がり、高いモードほど多くのピクセルを描画するため画像が鮮明になります。DLSS レイリコンストラクションは独自の同等モードを使用します。",
+
+	"caustica.options.rt.superResolution.0": "ネイティブ AA",
+
+	"caustica.options.rt.superResolution.1": "品質",
+
+	"caustica.options.rt.superResolution.2": "バランス",
+
+	"caustica.options.rt.superResolution.3": "パフォーマンス",
+
+	"caustica.options.rt.superResolution.4": "ウルトラパフォーマンス",
+
+	"caustica.options.rt.debugView.8": "露出フォルスカラー",
+
+	"caustica.options.rt.debugView.9": "測光ウェイト",
+
+	"caustica.options.rt.debugView.10": "錯乱円",
+
+	"caustica.options.rt.debugView.11": "オートフォーカス対象",
+
+	"caustica.options.rt.debugView.12": "ぼけ半径（実測）"
 }

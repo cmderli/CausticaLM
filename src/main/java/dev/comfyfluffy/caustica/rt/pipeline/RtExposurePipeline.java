@@ -23,6 +23,8 @@ import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.LongBuffer;
 
+import com.mojang.blaze3d.vulkan.VulkanCommandEncoder;
+
 import dev.comfyfluffy.caustica.rt.RtContext;
 import dev.comfyfluffy.caustica.rt.RtDebugLabels;
 import dev.comfyfluffy.caustica.rt.accel.RtBuffer;
@@ -36,12 +38,23 @@ import static dev.comfyfluffy.caustica.rt.pipeline.RtBindings.*;
 final class RtExposurePipeline {
     private static final String SHADER_DIR = "/caustica/shaders/pipelines/";
 
+    /**
+     * Side of the autofocus window, in RENDER pixels. Fixed rather than a share of the frame: the window has to
+     * stay an autofocus point, and one that scaled with the resolution or the frame would reach into the middle
+     * distance and start choosing the far terrain. It matches the shader's workgroup, which measures one texel
+     * per thread and reduces the whole window in shared memory. It is wide enough that a crosshair sitting on a
+     * block edge still sees the block: at 16 the plane followed the seam and drifted tens of blocks between two
+     * surfaces a few apart, which the smoothing then averaged into a focus on neither.
+     */
+    private static final int AUTOFOCUS_WINDOW_PIXELS = 32;
+
     private final RtContext ctx;
     private final long histDescriptorSetLayout;
     private final long histDescriptorPool;
     private final long histDescriptorSet;
     private final long histPipelineLayout;
     private final long histPipeline;
+    private final long autofocusPipeline;
     private final long resolveDescriptorSetLayout;
     private final long resolveDescriptorPool;
     private final long resolveDescriptorSet;
@@ -52,14 +65,16 @@ final class RtExposurePipeline {
     private long boundDepthView;
     private long boundAlbedoView;
     private long boundHistogramBufferForHist;
+    private long boundFocusBufferForHist;
     private long boundHistogramBufferForResolve;
+    private long boundFocusBufferForResolve;
     private long boundExposureView;
     private long boundStateBuffer;
     private boolean destroyed;
 
     private RtExposurePipeline(RtContext ctx,
                                long histDescriptorSetLayout, long histDescriptorPool, long histDescriptorSet,
-                               long histPipelineLayout, long histPipeline,
+                               long histPipelineLayout, long histPipeline, long autofocusPipeline,
                                long resolveDescriptorSetLayout, long resolveDescriptorPool, long resolveDescriptorSet,
                                long resolvePipelineLayout, long resolvePipeline) {
         this.ctx = ctx;
@@ -68,6 +83,7 @@ final class RtExposurePipeline {
         this.histDescriptorSet = histDescriptorSet;
         this.histPipelineLayout = histPipelineLayout;
         this.histPipeline = histPipeline;
+        this.autofocusPipeline = autofocusPipeline;
         this.resolveDescriptorSetLayout = resolveDescriptorSetLayout;
         this.resolveDescriptorPool = resolveDescriptorPool;
         this.resolveDescriptorSet = resolveDescriptorSet;
@@ -89,12 +105,14 @@ final class RtExposurePipeline {
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             histBinds.get(EXPOSURE_HIST_ALBEDO).binding(EXPOSURE_HIST_ALBEDO).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+            histBinds.get(EXPOSURE_HIST_FOCUS).binding(EXPOSURE_HIST_FOCUS).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+                    .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             VkDescriptorSetLayoutCreateInfo histDslci = VkDescriptorSetLayoutCreateInfo.calloc(stack)
                     .sType$Default().pBindings(histBinds);
             check(VK10.vkCreateDescriptorSetLayout(vk, histDslci, null, p), "vkCreateDescriptorSetLayout(rt exposure hist)");
             long histDsl = p.get(0);
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, histDsl, "exposure histogram descriptor set layout");
-            long histPool = createPool(vk, stack, 3, 1, "hist");
+            long histPool = createPool(vk, stack, 3, 2, "hist");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_POOL, histPool, "exposure histogram descriptor pool");
             long histSet = allocateSet(vk, stack, histPool, histDsl, "hist");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET, histSet, "exposure histogram descriptor set");
@@ -105,6 +123,13 @@ final class RtExposurePipeline {
             long histPipeline = createComputePipeline(vk, stack, histLayout, histModule, "hist");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_PIPELINE, histPipeline, "exposure histogram pipeline");
             VK10.vkDestroyShaderModule(vk, histModule, null);
+            // Same descriptor set and push block, different job: the autofocus point reduces a centre box to its
+            // nearest surface, which is a minimum and not a sum.
+            long focusModule = loadModule(vk, stack, "exposure_hist/autofocus.comp.spv");
+            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SHADER_MODULE, focusModule, "exposure autofocus shader module");
+            long autofocusPipeline = createComputePipeline(vk, stack, histLayout, focusModule, "autofocus");
+            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_PIPELINE, autofocusPipeline, "exposure autofocus pipeline");
+            VK10.vkDestroyShaderModule(vk, focusModule, null);
 
             VkDescriptorSetLayoutBinding.Buffer resolveBinds = VkDescriptorSetLayoutBinding.calloc(EXPOSURE_RESOLVE_BINDING_COUNT, stack);
             resolveBinds.get(EXPOSURE_RESOLVE_HIST_BINS).binding(EXPOSURE_RESOLVE_HIST_BINS).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
@@ -113,12 +138,14 @@ final class RtExposurePipeline {
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             resolveBinds.get(EXPOSURE_RESOLVE_STATE).binding(EXPOSURE_RESOLVE_STATE).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+            resolveBinds.get(EXPOSURE_RESOLVE_FOCUS).binding(EXPOSURE_RESOLVE_FOCUS).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+                    .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             VkDescriptorSetLayoutCreateInfo resolveDslci = VkDescriptorSetLayoutCreateInfo.calloc(stack)
                     .sType$Default().pBindings(resolveBinds);
             check(VK10.vkCreateDescriptorSetLayout(vk, resolveDslci, null, p), "vkCreateDescriptorSetLayout(rt exposure resolve)");
             long resolveDsl = p.get(0);
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, resolveDsl, "exposure resolve descriptor set layout");
-            long resolvePool = createPool(vk, stack, 1, 2, "resolve");
+            long resolvePool = createPool(vk, stack, 1, 3, "resolve");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_POOL, resolvePool, "exposure resolve descriptor pool");
             long resolveSet = allocateSet(vk, stack, resolvePool, resolveDsl, "resolve");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET, resolveSet, "exposure resolve descriptor set");
@@ -131,19 +158,22 @@ final class RtExposurePipeline {
             VK10.vkDestroyShaderModule(vk, resolveModule, null);
 
             return new RtExposurePipeline(ctx, histDsl, histPool, histSet, histLayout, histPipeline,
-                    resolveDsl, resolvePool, resolveSet, resolveLayout, resolvePipeline);
+                    autofocusPipeline, resolveDsl, resolvePool, resolveSet, resolveLayout, resolvePipeline);
         }
     }
 
     void setResources(long colorView, long depthView, long albedoView,
-                      RtBuffer histogram, long exposureView, RtBuffer state) {
+                      RtBuffer histogram, RtBuffer focus, long exposureView, RtBuffer state) {
         if (boundColorView != colorView || boundDepthView != depthView || boundAlbedoView != albedoView
-                || boundHistogramBufferForHist != histogram.handle) {
+                || boundHistogramBufferForHist != histogram.handle
+                || boundFocusBufferForHist != focus.handle) {
             try (MemoryStack stack = MemoryStack.stackPush()) {
                 VkDescriptorImageInfo.Buffer colorInfo = VkDescriptorImageInfo.calloc(1, stack);
                 colorInfo.get(0).imageView(colorView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
                 VkDescriptorBufferInfo.Buffer histInfo = VkDescriptorBufferInfo.calloc(1, stack);
                 histInfo.get(0).buffer(histogram.handle).offset(0).range(histogram.size);
+                VkDescriptorBufferInfo.Buffer focusInfo = VkDescriptorBufferInfo.calloc(1, stack);
+                focusInfo.get(0).buffer(focus.handle).offset(0).range(focus.size);
                 VkDescriptorImageInfo.Buffer depthInfo = VkDescriptorImageInfo.calloc(1, stack);
                 depthInfo.get(0).imageView(depthView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
                 VkDescriptorImageInfo.Buffer albedoInfo = VkDescriptorImageInfo.calloc(1, stack);
@@ -157,15 +187,18 @@ final class RtExposurePipeline {
                         .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(depthInfo);
                 writes.get(EXPOSURE_HIST_ALBEDO).sType$Default().dstSet(histDescriptorSet).dstBinding(EXPOSURE_HIST_ALBEDO)
                         .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(albedoInfo);
+                writes.get(EXPOSURE_HIST_FOCUS).sType$Default().dstSet(histDescriptorSet).dstBinding(EXPOSURE_HIST_FOCUS)
+                        .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).pBufferInfo(focusInfo);
                 VK10.vkUpdateDescriptorSets(ctx.vk(), writes, null);
             }
             boundColorView = colorView;
             boundDepthView = depthView;
             boundAlbedoView = albedoView;
             boundHistogramBufferForHist = histogram.handle;
+            boundFocusBufferForHist = focus.handle;
         }
         if (boundHistogramBufferForResolve != histogram.handle || boundExposureView != exposureView
-                || boundStateBuffer != state.handle) {
+                || boundStateBuffer != state.handle || boundFocusBufferForResolve != focus.handle) {
             try (MemoryStack stack = MemoryStack.stackPush()) {
                 VkDescriptorBufferInfo.Buffer histInfo = VkDescriptorBufferInfo.calloc(1, stack);
                 histInfo.get(0).buffer(histogram.handle).offset(0).range(histogram.size);
@@ -173,6 +206,8 @@ final class RtExposurePipeline {
                 exposureInfo.get(0).imageView(exposureView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
                 VkDescriptorBufferInfo.Buffer stateInfo = VkDescriptorBufferInfo.calloc(1, stack);
                 stateInfo.get(0).buffer(state.handle).offset(0).range(state.size);
+                VkDescriptorBufferInfo.Buffer focusInfo = VkDescriptorBufferInfo.calloc(1, stack);
+                focusInfo.get(0).buffer(focus.handle).offset(0).range(focus.size);
                 VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(EXPOSURE_RESOLVE_BINDING_COUNT, stack);
                 writes.get(EXPOSURE_RESOLVE_HIST_BINS).sType$Default().dstSet(resolveDescriptorSet).dstBinding(EXPOSURE_RESOLVE_HIST_BINS)
                         .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).pBufferInfo(histInfo);
@@ -180,11 +215,14 @@ final class RtExposurePipeline {
                         .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(exposureInfo);
                 writes.get(EXPOSURE_RESOLVE_STATE).sType$Default().dstSet(resolveDescriptorSet).dstBinding(EXPOSURE_RESOLVE_STATE)
                         .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).pBufferInfo(stateInfo);
+                writes.get(EXPOSURE_RESOLVE_FOCUS).sType$Default().dstSet(resolveDescriptorSet).dstBinding(EXPOSURE_RESOLVE_FOCUS)
+                        .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).pBufferInfo(focusInfo);
                 VK10.vkUpdateDescriptorSets(ctx.vk(), writes, null);
             }
             boundHistogramBufferForResolve = histogram.handle;
             boundExposureView = exposureView;
             boundStateBuffer = state.handle;
+            boundFocusBufferForResolve = focus.handle;
         }
     }
 
@@ -195,14 +233,49 @@ final class RtExposurePipeline {
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, histPipelineLayout, 0,
                     stack.longs(histDescriptorSet), null);
             ByteBuffer push = stack.malloc(ExposureHistPushData.BYTE_SIZE);
-            new ExposureHistPushData(config.stride(), config.centerWeightSigma(), config.centerWeightFloor())
-                    .write(push);
+            new ExposureHistPushData(config.stride(), config.centerWeightSigma(), config.centerWeightFloor(),
+                    config.projM22(), config.projM32(),
+                    AUTOFOCUS_WINDOW_PIXELS, 0).write(push);
             VK10.vkCmdPushConstants(cmd, histPipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             int stride = config.stride();
             int sampleWidth = (width + stride - 1) / stride;
             int sampleHeight = (height + stride - 1) / stride;
             VK10.vkCmdDispatch(cmd, (sampleWidth + 15) / 16, (sampleHeight + 15) / 16, 1);
         }
+    }
+
+    /**
+     * Records the autofocus measurement: the nearest surface inside a box at the centre of the frame.
+     *
+     * <p>The box is a fraction of the frame so that "the middle of what the player is looking at" means the same
+     * thing at every render resolution. It covers the middle of the picture rather than a few pixels at the
+     * crosshair: a nearest-surface rule over a point would follow whichever surface happens to sit exactly under
+     * the crosshair, and a fast lens' depth of field is thin enough that a subject slightly to one side of it
+     * would still be out of focus while the player looks straight at it.
+     */
+    void dispatchAutofocus(org.lwjgl.vulkan.VkCommandBuffer cmd, int width, int height,
+                           RtExposure.AutoConfig config, boolean diagnostic) {
+        try (MemoryStack stack = MemoryStack.stackPush();
+             RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "exposure autofocus")) {
+            VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, autofocusPipeline);
+            VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, histPipelineLayout, 0,
+                    stack.longs(histDescriptorSet), null);
+            ByteBuffer push = stack.malloc(ExposureHistPushData.BYTE_SIZE);
+            int focusStride = config.stride();
+            writePush(cmd, stack, config, width, height, focusStride, push, diagnostic ? 1 : 0);
+            // ONE group, one texel per thread, the whole window reduced in shared memory: no atomics, no second
+            // stage, and no partial result per group to combine.
+            VK10.vkCmdDispatch(cmd, 1, 1, 1);
+        }
+    }
+
+    private void writePush(org.lwjgl.vulkan.VkCommandBuffer cmd, MemoryStack stack,
+                           RtExposure.AutoConfig config, int width, int height, int stride,
+                           ByteBuffer push, int focusDiagnostic) {
+        new ExposureHistPushData(stride, config.centerWeightSigma(), config.centerWeightFloor(),
+                config.projM22(), config.projM32(),
+                AUTOFOCUS_WINDOW_PIXELS, focusDiagnostic).write(push);
+        VK10.vkCmdPushConstants(cmd, histPipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
     }
 
     void dispatchResolve(org.lwjgl.vulkan.VkCommandBuffer cmd, RtExposure.AutoConfig config, float frameTimeSeconds) {
@@ -218,7 +291,8 @@ final class RtExposurePipeline {
                     config.skyWeightCap(), curve.scene0(), curve.compensation0(), curve.scene1(),
                     curve.compensation1(), curve.scene2(), curve.compensation2(), curve.scene3(),
                     curve.compensation3(), config.emissiveWeightCap(), config.evOffset(), config.preExposure(),
-                    config.resetSequence()
+                    config.resetSequence(), config.physicalScale(), config.manualScale(),
+                    config.focusHalflifeSeconds()
             ).write(push);
             VK10.vkCmdPushConstants(cmd, resolvePipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             VK10.vkCmdDispatch(cmd, 1, 1, 1);
@@ -235,6 +309,7 @@ final class RtExposurePipeline {
         VK10.vkDestroyDescriptorPool(vk, resolveDescriptorPool, null);
         VK10.vkDestroyDescriptorSetLayout(vk, resolveDescriptorSetLayout, null);
         VK10.vkDestroyPipeline(vk, histPipeline, null);
+        VK10.vkDestroyPipeline(vk, autofocusPipeline, null);
         VK10.vkDestroyPipelineLayout(vk, histPipelineLayout, null);
         VK10.vkDestroyDescriptorPool(vk, histDescriptorPool, null);
         VK10.vkDestroyDescriptorSetLayout(vk, histDescriptorSetLayout, null);

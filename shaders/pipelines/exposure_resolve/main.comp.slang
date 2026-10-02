@@ -182,7 +182,43 @@ void main() {
     stateBuf[0].effectiveSlope = effectiveSlope;
     stateBuf[0].meteringEmissiveScale = emissiveScale;
     stateBuf[0].meteringEmissiveFrac = emissivePopulation * emissiveScale / total;
+    // Autofocus: the histogram pass accumulated a centre-weighted distance sum and its weight. A frame with
+    // no metered surface (all sky, or nothing sampled) reports 0, which is held rather than read as a focal
+    // plane at the lens.
+    //
+    // The measurement is smoothed in TIME, not space. A single frame's metered depth is a noisy, brittle
+    // estimate: a nearer surface crossing the centre of the frame moves it by metres at once, and the blur
+    // that follows reads as the lens snapping rather than racking. A half-life is the right shape for that
+    // because it is frame-rate independent by construction -- the fraction covered per frame follows the
+    // frame's own duration -- so the same setting feels identical at 30 and at 240 fps, which a fixed
+    // per-frame blend factor would not.
+    float focusWeight = focusScratch[1];
+    float measuredFocus = focusWeight > 0.0 ? focusScratch[0] / focusWeight : 0.0;
+    // The auto-focus filter, applied to the centre sample: an exponential approach with a HALF-LIFE in seconds.
+    // Expressed as exp(log(0.5) * frameTime * 10 / centerDepthHalflife) rather than as a per-frame blend factor,
+    // so a stalled or doubled frame changes the time constant instead of the result.
+    //
+    // The history is the smoothed value itself, not the raw measurement, so this is an approach to whatever the
+    // centre is showing now rather than an average of everything it has shown. Before the first measurement --
+    // or after a reset -- it takes the measurement as it stands instead of racking the lens in from zero.
+    stateBuf[0].measuredFocus = measuredFocus;
+    float previousFocus = stateBuf[0].smoothCenterDepth;
+    if (measuredFocus > 0.0) {
+        float halflife = max(pc.focusHalflifeSeconds, 1.0e-4);
+        float fadeFactor = exp(log(0.5) * max(pc.frameTimeSeconds, 0.0) * 10.0 / halflife);
+        bool first = reset || !(previousFocus > 0.0);
+        stateBuf[0].smoothCenterDepth = first
+                ? measuredFocus
+                : lerp(measuredFocus, previousFocus, clamp(fadeFactor, 0.0, 1.0));
+    }
+    // The reference's minFocalLength: the focal plane is never allowed inside the lens.
+    stateBuf[0].focusDistance = stateBuf[0].smoothCenterDepth > 0.0
+            ? max(stateBuf[0].smoothCenterDepth, 0.25) : 0.0;
     // The display pass consumes stored radiance, which raygen already scaled by preExposure, so it
-    // needs the residual rather than the absolute exposure. stored * residual == L * exposure.
-    exposureImage[int2(0, 0)] = exposure / preExposure;
+    // needs the residual rather than the absolute exposure. stored * residual == L * exposure. The
+    // camera's own aperture and shutter time scale that same number: the lens is part of the exposure,
+    // not a second correction layered on top of it. Manual exposure overrides the resolved value here
+    // rather than skipping this pass, so the metering the lens programmes read stays live in that mode.
+    float absoluteExposure = pc.manualScale > 0.0 ? pc.manualScale : exposure;
+    exposureImage[int2(0, 0)] = absoluteExposure * pc.physicalScale / preExposure;
 }

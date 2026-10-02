@@ -169,12 +169,14 @@ public final class RtDebugPresentPipeline {
     }
 
     public void dispatch(VkCommandBuffer cmd, int width, int height, int debugView,
-                         float centerWeightSigma, float centerWeightFloor) {
+                         float centerWeightSigma, float centerWeightFloor, float sensorHeightMetres,
+                         float focusDistanceBlocks, float lensRadiusBlocks, float projM22, float projM32) {
         try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "debug present compute")) {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, stack.longs(descriptorSet), null);
             ByteBuffer push = stack.malloc(DebugPresentPushData.BYTE_SIZE);
-            new DebugPresentPushData(debugView, centerWeightSigma, centerWeightFloor).write(push);
+            new DebugPresentPushData(debugView, centerWeightSigma, centerWeightFloor, sensorHeightMetres,
+                    focusDistanceBlocks, lensRadiusBlocks, projM22, projM32).write(push);
             VK10.vkCmdPushConstants(cmd, pipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             VK10.vkCmdDispatch(cmd, (width + 15) / 16, (height + 15) / 16, 1);
         }

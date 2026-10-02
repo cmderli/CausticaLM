@@ -65,6 +65,27 @@ final class CausticaLangTest {
         }
     }
 
+    /**
+     * Every locale carries the whole key set English does. Without this a locale silently falls behind whenever
+     * an option is added, which is invisible in game: Minecraft substitutes the English string and the option
+     * looks translated until someone reads it.
+     */
+    @Test
+    void everyLocaleCarriesEveryEnglishKey() {
+        Map<String, String> english = read(EN_US);
+        for (String locale : LOCALES) {
+            List<String> missing = new ArrayList<>();
+            Map<String, String> strings = read(locale);
+            for (String key : english.keySet()) {
+                if (!strings.containsKey(key)) {
+                    missing.add(key);
+                }
+            }
+            assertTrue(missing.isEmpty(), locale + " is missing " + missing.size() + " of "
+                    + english.size() + " English keys: " + missing);
+        }
+    }
+
     private static List<String> keysWithPrefix(Map<String, String> strings, String prefix) {
         List<String> keys = new ArrayList<>();
         for (String key : strings.keySet()) {

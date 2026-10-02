@@ -25,7 +25,7 @@ import org.slf4j.LoggerFactory;
  * the property namespace stays flat and dotted for convenient one-off {@code -D} overrides.
  */
 public final class CausticaConfig {
-    private static final Logger LOGGER = LoggerFactory.getLogger("Caustica");
+    private static final Logger LOGGER = LoggerFactory.getLogger("CausticaLM");
     private static final List<RuntimeSetting<?>> SETTINGS = new CopyOnWriteArrayList<>();
 
     private static final Path CONFIG_PATH = resolveConfigPath();
@@ -60,7 +60,7 @@ public final class CausticaConfig {
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,
             Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Rt.MotionBlur.ENABLED, Ngx.PATH, Fsr.PATH, Nrd.PATH,
-            Rt.Reconstruction.DENOISER,
+            Rt.Reconstruction.DENOISER, Rt.Camera.DEPTH_OF_FIELD_ENABLED,
         };
     }
 
@@ -84,7 +84,7 @@ public final class CausticaConfig {
 
     private static void writeComments() {
         FILE.setComment("enabled",
-                " Caustica ray-tracing settings. A matching -Dcaustica.* system property overrides a value here.");
+                " CausticaLM ray-tracing settings. A matching -Dcaustica.* system property overrides a value here.");
         FILE.setComment("terrain",
                 " Controls terrain loading. Higher limits can load terrain faster but use more CPU and GPU time.");
         FILE.setComment("frame-generation",
@@ -106,6 +106,23 @@ public final class CausticaConfig {
                 " Controls automatic exposure. manual-ev sets exposure in manual mode and adjusts it in auto mode.\n"
                         + " adapt-darken and adapt-brighten control adjustment speed in seconds.\n"
                         + " sky-weight-cap and emissive-weight-cap limit how much bright areas affect exposure.");
+        FILE.setComment("camera",
+                " Virtual camera optics. aperture is an f-number and shutter-time is in seconds; together they\n"
+                        + " set the exposure (EV100 = log2(aperture^2 / shutter-time)) and the aperture also sets the\n"
+                        + " depth of field. aperture-mode and shutter-mode: auto solves that value from the metered\n"
+                        + " scene, manual uses the value here. focus-mode auto meters the distance to the screen\n"
+                        + " centre, manual uses focus-distance in blocks.");
+        FILE.setComment("depth-of-field",
+                " Out-of-focus content blurs by an amount the aperture and the focus distance set. The field of\n"
+                        + " view still sets the focal length, so a narrow FOV focuses tighter at the same aperture.\n"
+                        + " mode simple gathers a circle of confusion from the finished image, which is stable and\n"
+                        + " cheap; mode physical makes the primary rays themselves leave through the aperture, so\n"
+                        + " the blur is real bokeh of the lens, at the cost of rays and of visible sampling at wide\n"
+                        + " apertures. samples applies to the physical mode only: the number of points of the\n"
+                        + " aperture each pixel traces through. max-blur-percent bounds the largest out-of-focus\n"
+                        + " disc: a fast lens focused close blurs the whole far field by more than the frame is\n"
+                        + " tall, and without a bound everything past a metre would share one blur and the frame\n"
+                        + " would read as soft everywhere instead of as a sharp subject against a soft one.");
         FILE.setComment("hdr",
                 " HDR display output. Requires operating system and display support.\n"
                         + " ui-nits places SDR-authored UI in the PQ output (BT.2408 graphics white is 203; the\n"
@@ -139,7 +156,7 @@ public final class CausticaConfig {
         try {
             config.load();
         } catch (Exception e) {
-            LOGGER.warn("Failed to read Caustica config {}: {}", path, e.toString());
+            LOGGER.warn("Failed to read CausticaLM config {}: {}", path, e.toString());
         }
         return config;
     }
@@ -886,6 +903,223 @@ public final class CausticaConfig {
                     clampedFloat("caustica.rt.tonemap.gamma", "tonemap.gamma", 1.0f, 0.1f, 5.0f);
 
             private Tonemap() {
+            }
+        }
+
+        /**
+         * Virtual camera optics: the lens that the traced primary rays actually pass through. Aperture and
+         * shutter time are physical quantities, so both shape the image twice over — the aperture sets the
+         * depth of field and the shutter time sets how much light reaches the frame — and the exposure they
+         * imply is applied to the traced radiance exactly as a real lens would.
+         *
+         * <p>Aperture is an f-number (focal length / entrance pupil diameter) and shutter time is in
+         * seconds; the textbook exposure value of a combination is
+         * {@code EV100 = log2(N^2 / t)}, which is what {@link #ev100()} reports. The camera's defaults are the
+         * reference combination {@link #REFERENCE_EV100}, the point where the physical exposure scale is
+         * exactly 1.0, so a camera left alone renders precisely as it did before these options existed.
+         */
+        public static final class Camera {
+            /**
+             * Whether the primary rays sample the lens aperture. With it off the camera is a pinhole: the
+             * aperture still sets the exposure (it is a lens, not a debug switch), but nothing is out of
+             * focus.
+             */
+            public static final BooleanSetting DEPTH_OF_FIELD_ENABLED =
+                    bool("caustica.rt.dof", "depth-of-field.enabled", true);
+
+            /**
+             * Exposure value at ISO 100 of the reference combination f/2.8 at 1/60 s, from the standard
+             * {@code EV100 = log2(N^2 / t)}. The camera's default aperture and shutter time are that
+             * combination, so a scene the automatic exposure controller is happy with leaves the physical
+             * exposure scale at exactly 1.0 and the image unchanged.
+             */
+            public static final float REFERENCE_EV100 = 8.877744f;
+
+            // Full-stop aperture ladder, indexed by f-stops: rung N is f-number 2^(N/2), i.e. f/1.4 at rung 1
+            // through f/32 at rung 10. The f-number is the square root of a power of two, so each rung is
+            // exactly one stop and the scale can be walked in EV space without a lookup table.
+            public static final int APERTURE_MIN_STOP = 1;   // f/1.4
+            public static final int APERTURE_MAX_STOP = 10;  // f/32
+
+            /**
+             * Manual aperture in f-stops. f/2.8 is the reference and the default: wide enough to open up in
+             * dim light, stopped down enough that a landscape is not one flat plane of focus.
+             */
+            public static final FloatSetting MANUAL_APERTURE =
+                    clampedFloat("caustica.rt.camera.aperture", "camera.aperture",
+                            2.8f, fStop(APERTURE_MIN_STOP), fStop(APERTURE_MAX_STOP));
+
+            public static final StringSetting APERTURE_MODE =
+                    string("caustica.rt.camera.apertureMode", "camera.aperture-mode", "auto",
+                            Camera::sanitizeMode);
+
+            // Shutter-time ladder in denominator seconds: the standard camera scale. A short ladder is a
+            // feature here, not a limitation -- a shutter time that is not on the photographer's scale
+            // cannot be dialled in by hand on a real camera either.
+            public static final List<Integer> SHUTTER_DENOMINATORS =
+                    List.of(2000, 1000, 500, 250, 125, 60, 30, 15, 8, 4, 2, 1);
+            /** Shutter time in seconds for {@code denominator}, i.e. 60 -> 1/60 s. */
+            public static float shutterSeconds(int denominator) {
+                return 1.0f / denominator;
+            }
+
+            /** Manual shutter time in seconds; 1/60 s is the reference and the default. */
+            public static final FloatSetting MANUAL_SHUTTER_TIME =
+                    clampedFloat("caustica.rt.camera.shutterTime", "camera.shutter-time",
+                            shutterSeconds(60), shutterSeconds(2000), shutterSeconds(1));
+
+            public static final StringSetting SHUTTER_MODE =
+                    string("caustica.rt.camera.shutterMode", "camera.shutter-mode", "auto",
+                            Camera::sanitizeMode);
+
+            /**
+             * How the focal plane is chosen. {@code auto} meters the distance to whatever the screen centre
+             * is pointing at, the way a camera's centre autofocus point does; {@code manual} uses
+             * {@link #FOCUS_DISTANCE}.
+             */
+            public static final StringSetting FOCUS_MODE =
+                    string("caustica.rt.camera.focusMode", "camera.focus-mode", "auto",
+                            Camera::sanitizeFocus);
+
+            /** Manual focus distance in blocks (1 block = 1 m). The clamp is the near limit of the lens. */
+            public static final FloatSetting FOCUS_DISTANCE =
+                    clampedFloat("caustica.rt.camera.focusDistance", "camera.focus-distance",
+                            8.0f, 0.25f, 512.0f);
+
+            private Camera() {
+            }
+
+            /**
+             * Aperture in f-stops as a continuous value: {@code ev = 2 * log2(N)}, so one stop of aperture is
+             * one EV of exposure. Not the setting itself — see {@link #MANUAL_APERTURE}.
+             */
+            public static float apertureStops(float fNumber) {
+                return 2.0f * (float) (Math.log(Math.max(fNumber, 1.0e-4)) / Math.log(2.0));
+            }
+
+            /** The f-number of an aperture rung: {@code fStop(1) = f/1.4}, {@code fStop(3) = f/2.8}. */
+            public static float fStop(int stop) {
+                return (float) Math.pow(2.0, stop * 0.5);
+            }
+
+            /**
+             * Exposure value at ISO 100 of an aperture and shutter-time pair:
+             * {@code EV100 = log2(N^2 / t)}. Higher means less light is reaching the frame.
+             *
+             * <p>This is the standard EV100 convention, under which the reference combination f/2.8 at 1/60 s
+             * is {@link #REFERENCE_EV100}. It is not the same number as the exposure controller's own EV, which
+             * is a bare log2 multiplier: an EV of 0 there is an absolute exposure of 1.0, which corresponds to
+             * EV100 0 and therefore to f/1.0 at 1 s. The two are related by
+             * {@code multiplier = 2^(EV100 - REFERENCE_EV100)}.
+             */
+            public static float ev100(float fNumber, float shutterSeconds) {
+                return 2.0f * (float) (Math.log(Math.max(fNumber, 1.0e-4)) / Math.log(2.0))
+                        - (float) (Math.log(Math.max(shutterSeconds, 1.0e-6)) / Math.log(2.0));
+            }
+
+            /**
+             * Points of the lens aperture each pixel traces a path through per frame.
+             *
+             * <p>The trace's own disc of confusion is capped so it stays one a single sample per pixel can
+             * resolve, and the depth-of-field gather supplies the rest of the camera's aperture; these samples
+             * are what keep that traced core from flickering, because they give it several points of the pupil
+             * within one frame instead of relying on the temporal history alone.
+             *
+             * <p>Every sample after the first stops at the vertex the camera ray reached: it resolves which
+             * surface that point of the pupil sees and what the surface is lit by, and the path's indirect
+             * lighting is kept whole from the first sample rather than estimated again per sample. That is what
+             * makes an extra sample a single trace rather than another whole path per pixel.
+             *
+             * <p>The guide buffers stay on the first sample, which is the ray the frame's own geometry is
+             * described by, so the depth and motion a denoiser reprojects with keep matching the image.
+             */
+            public static final List<Integer> DOF_SAMPLE_STEPS = List.of(1, 2, 4);
+            public static final IntSetting DOF_SAMPLES =
+                    intChoice("caustica.rt.dof.samples", "depth-of-field.samples", 2, DOF_SAMPLE_STEPS);
+
+            /**
+             * How depth of field is produced.
+             *
+             * <p>{@code simple} traces one sharp ray per pixel and blurs the finished image with a
+             * circle-of-confusion gather: every tap is weighed by whether it is in front of or behind the pixel
+             * it contributes to, so a sharp foreground is composited over a defocused background rather than
+             * being smeared into it. It is the shape a real-time renderer uses and it is stable, but the blur is
+             * a filter over the image rather than light the lens actually gathered.
+             *
+             * <p>{@code physical} makes the primary rays themselves leave through the aperture, so the blur is
+             * part of the trace: a pixel whose circle of confusion is wider than one sample per pixel can
+             * resolve gets the difference from the gather, and the traced part is a real bokeh of the aperture.
+             * It is the more faithful of the two and it costs rays and, at a wide aperture, visible sampling.
+             *
+             * <p>{@code artistic} keeps the same gather but drops the lens from the calculation entirely: the
+             * blur is {@code strength * focusDistance * |Zf / Z - 1|} pixels, so its size comes from one setting
+             * rather than from the aperture, the sensor and the field of view together. That is what a game's
+             * depth of field usually is, and it is the difference that matters in practice: the lens is real,
+             * and a 45 mm f/1.4 focused two metres away blurs its subject completely a quarter of a metre out
+             * of focus, which is correct, unusable and impossible to tune by field of view. Expressing the blur
+             * against the FOCAL DISTANCE rather than a fixed radius is what keeps a close subject soft and a
+             * distant one sharp, the way the eye expects, while the strength alone still sets how far it goes.
+             */
+            public static final List<String> DOF_MODES = List.of("simple", "physical", "artistic");
+            public static final StringSetting DOF_MODE =
+                    string("caustica.rt.dof.mode", "depth-of-field.mode", "simple",
+                            Camera::sanitizeDofMode);
+
+            /**
+             * How much of the lens' own blur the renderer draws, as a multiplier on the aperture.
+             *
+             * <p>The optics decide the shape of the effect -- the aperture, the focal length and the focus
+             * distance are all in there, and that is what makes a distant focus leave the frame sharp while a
+             * near one softens the background. This only scales it, because the honest disc is small at the
+             * distances and the fields of view this renderer works in: a 15 mm at f/1.4 blurs a surface a metre
+             * from a seven-metre focus by eight pixels, which is a real depth of field but a subtle one. Unity
+             * is the lens itself and two or three times that is what reads as a shallow portrait lens.
+             */
+            public static final FloatSetting ARTISTIC_BLUR =
+                    clampedFloat("caustica.rt.dof.artisticBlur", "depth-of-field.artistic-blur", 2.0f,
+                            0.25f, 8.0f);
+
+            private static String sanitizeDofMode(String value) {
+                if ("physical".equalsIgnoreCase(value)) {
+                    return "physical";
+                }
+                return "artistic".equalsIgnoreCase(value) ? "artistic" : "simple";
+            }
+
+            /**
+             * Largest out-of-focus disc, as a percentage of the frame height.
+             *
+             * <p>This is the effect's artistic bound rather than a physical one. A fast lens focused close has no
+             * small answer — a 45 mm f/1.4 at 1 m blurs a subject 3 m away by more than twice the frame height —
+             * so without a bound the entire far field collapses onto one value and the frame reads as uniformly
+             * soft instead of as a sharp subject against a soft background. Raising it deepens the blur and
+             * shrinks the range that still looks sharp; lowering it does the opposite.
+             */
+            public static final FloatSetting MAX_BLUR_PERCENT =
+                    clampedFloat("caustica.rt.dof.maxBlurPercent", "depth-of-field.max-blur-percent", 2.0f,
+                            0.5f, 100.0f);
+
+            /** True when the primary rays sample the aperture themselves, rather than being traced sharp. */
+            public static boolean physicalDepthOfField() {
+                return depthOfField() && "physical".equals(DOF_MODE.get());
+            }
+
+            /** True when the blur is one scaling coefficient instead of the camera's own lens. */
+            public static boolean artisticDepthOfField() {
+                return depthOfField() && "artistic".equals(DOF_MODE.get());
+            }
+
+            /** Depth of field is only a lens effect when the aperture is enabled and the aperture is finite. */
+            public static boolean depthOfField() {
+                return DEPTH_OF_FIELD_ENABLED.value();
+            }
+
+            private static String sanitizeMode(String value) {
+                return "manual".equalsIgnoreCase(value) ? "manual" : "auto";
+            }
+
+            private static String sanitizeFocus(String value) {
+                return "manual".equalsIgnoreCase(value) ? "manual" : "auto";
             }
         }
 

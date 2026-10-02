@@ -3,7 +3,9 @@
 
 	"caustica.options.rt.exposureMode": "Exposition",
 	"caustica.options.rt.exposureMode.tooltip": "Détermine comment l'image en lancer de rayons est convertie en luminosité d'affichage. Auto s'adapte à la luminance de la scène ; Manuel utilise directement la valeur d'exposition.",
+
 	"caustica.options.rt.exposureMode.auto": "Auto",
+
 	"caustica.options.rt.exposureMode.manual": "Manuel",
 
 	"caustica.options.rt.manualEv": "Exposition EV",
@@ -29,8 +31,10 @@
 
 	"caustica.options.rt.motionBlur": "Flou de mouvement",
 	"caustica.options.rt.motionBlur.tooltip": "Floute l'image le long des vecteurs de mouvement réels de chaque pixel pendant la durée d'obturation. Les rotations de caméra et les objets en mouvement filent comme avec un obturateur argentique ; coût : une passe en résolution d'affichage.",
+
 	"caustica.options.rt.motionBlurShutter": "Angle d'obturateur",
 	"caustica.options.rt.motionBlurShutter.tooltip": "Part de l'intervalle entre deux images pendant laquelle l'obturateur virtuel reste ouvert, en degrés : 180 est la norme cinéma (la moitié de l'intervalle), 360 le garde ouvert en continu, 0 désactive le filé.",
+
 	"caustica.options.rt.motionBlurSamples": "Échantillons du flou de mouvement",
 	"caustica.options.rt.motionBlurSamples.tooltip": "Nombre d'échantillons moyennés le long du filé. Plus il y en a, plus les mouvements rapides sont lisses ; 8 est une bonne valeur par défaut.",
 
@@ -41,13 +45,126 @@
 	"caustica.options.rt.hdrPeak.tooltip": "Luminosité absolue (en nits) vers laquelle les hautes lumières s'atténuent. Réglez-la sur la luminosité HDR maximale de votre écran.",
 
 	"caustica.options.rt.debugView": "Vue de débogage",
-	"caustica.options.rt.debugView.tooltip": "Visualise un tampon intermédiaire du lancer de rayons au lieu de l'image finale.",
+	"caustica.options.rt.debugView.tooltip": "Inspecte les tampons du lancer de rayons et les diagnostics d'exposition une fois la frame normale rendue.",
+
 	"caustica.options.rt.debugView.0": "Désactivé",
+
 	"caustica.options.rt.debugView.1": "Normales",
+
 	"caustica.options.rt.debugView.2": "Albédo",
+
 	"caustica.options.rt.debugView.3": "Profondeur",
+
 	"caustica.options.rt.debugView.4": "Rugosité",
+
 	"caustica.options.rt.debugView.5": "Mouvement",
+
 	"caustica.options.rt.debugView.6": "Spéculaire",
-	"caustica.options.rt.debugView.7": "Mouvement spéculaire"
+
+	"caustica.options.rt.debugView.7": "Mouvement spéculaire",
+
+	"caustica.options.rt.gamma": "Gamma",
+	"caustica.options.rt.gamma.tooltip": "Gamma de luminance appliqué après la transformation. Les valeurs inférieures à 1,00 éclaircissent les ombres et les tons moyens tout en préservant le noir, le blanc et les rapports de couleurs.",
+
+	"caustica.options.rt.depthOfField": "Profondeur de champ",
+	"caustica.options.rt.depthOfField.tooltip": "Trace les rayons primaires à travers l'ouverture de la caméra pour que les éléments hors mise au point soient flous comme avec un véritable objectif. L'option Champ de vision définit la distance focale ; un champ de vision étroit rend la mise au point plus serrée à ouverture et distance de mise au point identiques.",
+
+	"caustica.options.rt.dofMode": "Mode de profondeur de champ",
+	"caustica.options.rt.dofMode.tooltip": "Comment le flou est produit. Simple collecte un cercle de confusion depuis l’image finale : stable et peu coûteux, et un premier plan net est composé sur un arrière-plan flou au lieu d’y être étalé. Physique fait sortir les rayons primaires par l’ouverture : le flou est alors un vrai bokeh de l’objectif, au prix de rayons et d’un échantillonnage visible à grande ouverture.",
+
+	"caustica.options.rt.dofMode.simple": "Simple",
+
+	"caustica.options.rt.dofMode.physical": "Physique",
+
+	"caustica.options.rt.dofMode.artistic": "Artistique",
+
+	"caustica.options.rt.dofArtisticBlur": "Intensité du flou",
+	"caustica.options.rt.dofArtisticBlur.tooltip": "Flou maximal du mode artistique, en pourcentage de la hauteur de l’image. C’est tout le réglage d’intensité et il signifie la même chose quel que soit le champ de vision, la résolution et la distance de mise au point. En dessous de 1% c’est une séparation discrète, 1-2% un fond nettement doux, et au-dessus de 3% cela devient un effet qui engloutit tout sauf le plan de netteté.",
+
+
+	"caustica.options.rt.dofMaxBlur": "Flou max.",
+	"caustica.options.rt.dofMaxBlur.tooltip": "Plus grand disque de flou, en pourcentage de la hauteur de l’image. Un objectif lumineux mis au point de près floute l’arrière-plan plus que la hauteur de l’image ; sans borne, tout ce qui dépasse un mètre partagerait le même flou et l’image paraîtrait molle partout au lieu d’un sujet net sur un fond flou. Augmentez pour approfondir le flou, baissez pour garder davantage de net.",
+
+	"caustica.options.rt.dofSamples": "Échantillons de profondeur de champ",
+	"caustica.options.rt.dofSamples.tooltip": "Points de l’ouverture traversés par chaque pixel. Le lancer de rayons ne couvre qu’un petit disque de confusion ; le reste de l’ouverture est collecté depuis l’image finale par une passe ultérieure. Ce réglage empêche donc la partie tracée de scintiller plutôt que de fixer la taille du flou. Chaque échantillon supplémentaire coûte un rayon par pixel, pas une trajectoire complète.",
+
+	"caustica.options.rt.apertureMode": "Ouverture",
+	"caustica.options.rt.apertureMode.tooltip": "Auto calcule le nombre f à partir de la scène mesurée à chaque image ; Manuel le fixe à la valeur Ouverture, exactement comme une bague d'objectif. Les ouvertures plus grandes (petits nombres f) floutent davantage l'arrière-plan et laissent entrer plus de lumière.",
+
+	"caustica.options.rt.apertureMode.auto": "Auto",
+
+	"caustica.options.rt.apertureMode.manual": "Manuel",
+
+	"caustica.options.rt.aperture": "Taille d'ouverture",
+	"caustica.options.rt.aperture.tooltip": "Le nombre f : la distance focale divisée par le diamètre de la pupille d'entrée. Une ouverture plus grande (petits nombres) donne une profondeur de champ plus faible et une image plus lumineuse ; une ouverture plus petite (grands nombres) garde davantage de scène nette et assombrit l'image.",
+
+	"caustica.options.rt.shutterMode": "Mode de temps d'obturation",
+	"caustica.options.rt.shutterMode.tooltip": "Auto calcule le temps d'obturation à partir de la scène mesurée à chaque image ; Manuel le fixe à la valeur Temps d'obturation.",
+
+	"caustica.options.rt.shutterMode.auto": "Auto",
+
+	"caustica.options.rt.shutterMode.manual": "Manuel",
+
+	"caustica.options.rt.shutterTime": "Temps d'obturation",
+	"caustica.options.rt.shutterTime.tooltip": "Durée pendant laquelle l'obturateur virtuel reste ouvert. Des temps plus longs éclaircissent l'image (et, avec le Flou de mouvement activé, allongent le filé) ; des temps plus courts l'assombrissent.",
+
+	"caustica.options.rt.focusMode": "Mise au point",
+	"caustica.options.rt.focusMode.tooltip": "Auto fait la mise au point sur ce que vise le centre de l'écran, comme le point d'autofocus central d'un appareil photo ; Manuel fait la mise au point à une distance fixe.",
+
+	"caustica.options.rt.focusMode.auto": "Auto",
+
+	"caustica.options.rt.focusMode.manual": "Manuel",
+
+	"caustica.options.rt.focusDistance": "Distance de mise au point",
+	"caustica.options.rt.focusDistance.tooltip": "Distance à laquelle se situe le plan net par rapport à la caméra, en mètres. Tout ce qui se trouve à cette distance reste net, et tout ce qui est plus près ou plus loin est flouté selon l'ouverture.",
+
+	"caustica.options.rt.autoValue": " (auto)",
+
+	"caustica.options.rt.hdrUiBrightness": "Luminosité HDR de l'interface",
+	"caustica.options.rt.hdrUiBrightness.tooltip": "Luminosité absolue (en nits) attribuée à une interface conçue en SDR sur un écran HDR. La norme BT.2408 place le blanc graphique SDR à 203 nits ; la transformation de sortie HDR ACES place une surface blanche du monde autour de 107 nits pour un pic à 1000 nits.",
+
+	"caustica.options.rt.denoiser": "Débruiteur",
+	"caustica.options.rt.denoiser.tooltip": "Quel débruiteur nettoie l'image en lancer de rayons. Auto choisit le meilleur que cette machine peut exécuter. DLSS Ray Reconstruction nécessite un GPU NVIDIA RTX, NRD nécessite sa bibliothèque native, et le débruiteur intégré fonctionne toujours mais est plus doux car il n'a pas d'historique d'images. Désactivé affiche l'image tracée brute.",
+
+	"caustica.options.rt.denoiser.auto": "Auto",
+
+	"caustica.options.rt.denoiser.dlss-rr": "DLSS Ray Reconstruction",
+
+	"caustica.options.rt.denoiser.nrd": "NRD",
+
+	"caustica.options.rt.denoiser.builtin": "Intégré",
+
+	"caustica.options.rt.denoiser.off": "Désactivé",
+
+	"caustica.options.rt.superResolutionMethod": "Méthode de super-résolution",
+	"caustica.options.rt.superResolutionMethod.tooltip": "Quel suréchantillonneur amène l'image en résolution de rendu jusqu'à votre écran. Auto utilise FSR lorsque sa bibliothèque d'exécution est installée, et sinon la résolution bilinéaire intégrée. Le bilinéaire fonctionne toujours, mais est plus doux.",
+
+	"caustica.options.rt.superResolutionMethod.auto": "Auto",
+
+	"caustica.options.rt.superResolutionMethod.fsr": "FSR",
+
+	"caustica.options.rt.superResolutionMethod.bilinear": "Bilinéaire",
+
+	"caustica.options.rt.superResolution": "Super-résolution",
+	"caustica.options.rt.superResolution.tooltip": "Résolution de rendu à laquelle le monde est tracé avant d'être mis à l'échelle vers votre écran. Les modes inférieurs rendent moins de pixels et agrandissent plus fortement pour une fréquence d'images plus élevée ; les modes supérieurs rendent plus de pixels pour une image plus nette. DLSS Ray Reconstruction utilise ses propres modes équivalents.",
+
+	"caustica.options.rt.superResolution.0": "AA natif",
+
+	"caustica.options.rt.superResolution.1": "Qualité",
+
+	"caustica.options.rt.superResolution.2": "Équilibré",
+
+	"caustica.options.rt.superResolution.3": "Performance",
+
+	"caustica.options.rt.superResolution.4": "Ultra Performance",
+
+	"caustica.options.rt.debugView.8": "Fausses couleurs d'exposition",
+
+	"caustica.options.rt.debugView.9": "Poids de mesure",
+
+	"caustica.options.rt.debugView.10": "Cercle de confusion",
+
+	"caustica.options.rt.debugView.11": "Cible de l’autofocus",
+
+	"caustica.options.rt.debugView.12": "Rayon de flou (mesuré)"
 }

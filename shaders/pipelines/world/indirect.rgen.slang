@@ -48,9 +48,69 @@ public struct PathRadiance {
     public float3 specular;
     public float diffHitDist;
     public float specHitDist;
+    // The part of the two above that the path's own first shaded vertex contributed: everything reaching it
+    // directly, and nothing that arrived by a further bounce. A trace stopped at that vertex returns exactly
+    // this, which is what lets a budget-limited trace be combined with a full one without either being counted
+    // twice -- see the aperture sweep, which spends its extra samples on this and keeps the indirect lighting
+    // from the one full path.
+    public float3 primaryDiffuse;
+    public float3 primarySpecular;
 };
 
-public PathRadiance tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
+// The camera ray of one aperture sample of a pixel, for the sweep below. A depth-of-field disc is the image of
+// the lens, so it is only sampled where the primary rays land on it: a pixel's disc receives the contribution of
+// the points of the pupil its own rays started from.
+//
+// Sample zero is NOT built here. The guide pass owns the primary ray and samples sample zero of the pupil with
+// it, so this pass reads that ray back from the queue instead of deriving it a second time: deriving it would
+// re-trace a ray the frame already paid for, and it would take the guides' ray away from the image the guides
+// describe.
+public PathSegment apertureCameraSegment(float3 axisEye, float3 axisDir, float rayConeSpread,
+                                         uint2 pix, uint sampleIndex, uint seed) {
+    float3 dir = axisDir;
+    float3 origin = axisEye;
+    if (worldPush.dofParams.z != 0.0) {
+        float maxCocBlocks = max(worldPush.dofParams.w * rayConeSpread, RAY_CONE_MIN_WIDTH);
+        float lensRadius = min(worldPush.dofParams.x, maxCocBlocks);
+        float3 lens = axisEye + sampleLensDisc(lensRadius, float2(pix), worldPush.frameIndex, sampleIndex);
+        dir = normalize(axisEye + axisDir * worldPush.dofParams.y - lens);
+        origin = lens;
+    }
+    // The camera ray may see the sun/moon disc. Every continuation the path takes resets the flag itself, so
+    // this cannot leak deeper into the path.
+    MediumStack medium = makeMediumStack((worldPush.flags & 1u) != 0u
+            ? makeDielectricMedium(true, WATER_IOR, worldPush.waterParams.xyz, 1.0)
+            : airMedium());
+    return makePathSegment(origin, dir, float3(1.0, 1.0, 1.0),
+            medium, 0.0, rayConeSpread, seed, 0, true);
+}
+
+// Folds one traced path into the frame's running sums. Shared by the aperture sweep and the queue loop so a
+// sample counts the same whichever loop produced it -- the two differ only in which point of the pupil the ray
+// left from, which is not something the accumulators can see.
+public void accumulatePath(PathRadiance radiance, inout float3 frameDiffuse, inout float3 frameSpecular,
+                           inout float diffHitDistSum, inout float specHitDistSum,
+                           inout uint diffHitDistCount, inout uint specHitDistCount) {
+    frameDiffuse += radiance.diffuse;
+    frameSpecular += radiance.specular;
+    // Averaged over the samples that actually traced the lane, not over every sample: a lane is only taken by
+    // the paths whose primary vertex sampled that lobe.
+    if (radiance.diffHitDist >= 0.0) {
+        diffHitDistSum += radiance.diffHitDist;
+        diffHitDistCount++;
+    }
+    if (radiance.specHitDist >= 0.0) {
+        specHitDistSum += radiance.specHitDist;
+        specHitDistCount++;
+    }
+}
+
+// `bounceBudget` is the last vertex this trace may shade, and it decides both what the trace costs and what it
+// reports: at PRIMARY_ONLY_BOUNCES the loop cannot take a continuation, so the trace is the camera ray and its
+// own vertex' lighting with no further NEE, RIS, roulette or second ray -- and the path beyond that vertex is
+// reported as nothing rather than as a discarded estimate, so a budget-limited trace can be averaged together
+// with a full one without either being counted twice.
+public PathRadiance tracePath(PathSegment seg, uint2 pix, uint sampleIndex, int bounceBudget) {
     float3 Ldiff = float3(0.0, 0.0, 0.0);
     float3 Lspec = float3(0.0, 0.0, 0.0);
     // -1 until the primary vertex picks a continuation lobe, then 0 diffuse / 1 specular for the rest of
@@ -68,7 +128,11 @@ public PathRadiance tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
     seed = pcg(seed);
     float rayConeWidth = seg.rayConeWidth;
     float rayConeSpread = max(seg.rayConeSpread, RAY_CONE_MIN_SPREAD);
-    int maxBounces = int(worldPush.maxBounces);
+    int maxBounces = min(int(worldPush.maxBounces), max(bounceBudget, PRIMARY_ONLY_BOUNCES));
+    // A trace that stops at the vertex the camera ray reached reports only that vertex' lighting. Subtracting the
+    // primary contribution out of the total is exact for a full trace (it cancels) and leaves exactly the primary
+    // contribution for a stopped one, so the two can be averaged without either being counted twice.
+    float indirectWeight = maxBounces <= PRIMARY_ONLY_BOUNCES ? 0.0 : 1.0;
     int rrStart = maxBounces <= 3 ? 1 : 2;
     // RIS emitter NEE: direct lighting from block emitters is active when lights are published and the
     // candidate count is non-zero. Otherwise emitters contribute only when a path hits them.
@@ -96,7 +160,13 @@ public PathRadiance tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
     // remains active with its full configured candidate count at every hit. Pass A's primary/interface
     // prefix is outside this SSS quality budget.
     int indirectDepth = 0;
+    // Accumulated only while the path is still at the vertex the camera ray reached, which is the one whose
+    // lighting a budget-limited trace reproduces. A dielectric interface keeps the path at that vertex for
+    // another iteration, which is why this follows the bounce counter rather than the iteration.
+    float3 primaryDiffuse = float3(0.0, 0.0, 0.0);
+    float3 primarySpecular = float3(0.0, 0.0, 0.0);
     for (int bounce = seg.bounce; bounce <= maxBounces; bounce++) {
+        bool atPrimaryVertex = bounce == 0;
         // Radiance SBT records run any-hit only for true alpha cutout. Translucent/water go straight to
         // closest-hit for dielectric handling. Geometry is double-sided; the chit flips the normal.
         // Primary (bounce 0) is the camera ray (CULL_PRIMARY): sees particles but not the first-person
@@ -137,8 +207,14 @@ public PathRadiance tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             // belongs to the diffuse lane.
             if (lane == 1) {
                 Lspec += throughput * sky;
+                if (atPrimaryVertex) {
+                    primarySpecular += throughput * sky;
+                }
             } else {
                 Ldiff += throughput * sky;
+                if (atPrimaryVertex) {
+                    primaryDiffuse += throughput * sky;
+                }
             }
             break;
         }
@@ -260,7 +336,11 @@ public PathRadiance tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 float3 shadowOrigin = hitPos + (signedNdl >= 0.0 ? n : -n) * SURF_BIAS;
                 float3 vis = visibility(shadowOrigin, lightDir, 10000.0).transmittance;
                 if (max(vis.r, max(vis.g, vis.b)) > 0.0) {
-                    Ldiff += throughput * albedo * INV_PI * celestialLight.illuminance * ndl * vis;
+                    float3 billboard = throughput * albedo * INV_PI * celestialLight.illuminance * ndl * vis;
+                    Ldiff += billboard;
+                    if (atPrimaryVertex) {
+                        primaryDiffuse += billboard;
+                    }
                 }
             }
 
@@ -272,8 +352,12 @@ public PathRadiance tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 Reservoir r = risInitial(hitPos, n, v, rd, albedo, float3(0.0, 0.0, 0.0), 1.0,
                                          true, 0.0, seed, proposalSeed);
                 float3 unusedSpecular;
-                Ldiff += throughput * shadeReservoir(r, hitPos, n, v, rd, albedo, float3(0.0, 0.0, 0.0), 1.0,
-                                                     true, 0.0, unusedSpecular);
+                float3 billboardRis = throughput * shadeReservoir(r, hitPos, n, v, rd, albedo,
+                        float3(0.0, 0.0, 0.0), 1.0, true, 0.0, unusedSpecular);
+                Ldiff += billboardRis;
+                if (atPrimaryVertex) {
+                    primaryDiffuse += billboardRis;
+                }
             }
 
             if (bounce >= maxBounces) {
@@ -323,8 +407,14 @@ public PathRadiance tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             // it is simply radiance arriving through the lane already chosen.
             if (lane == 1) {
                 Lspec += throughput * albedo * emission;
+                if (atPrimaryVertex) {
+                    primarySpecular += throughput * albedo * emission;
+                }
             } else {
                 Ldiff += throughput * albedo * emission;
+                if (atPrimaryVertex) {
+                    primaryDiffuse += throughput * albedo * emission;
+                }
             }
         }
 
@@ -361,13 +451,15 @@ public PathRadiance tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 float3 direct = throughput * celestialLight.illuminance * ndl * vis;
                 // One shadow ray serves both lobes, so at the primary vertex the term is split by BRDF
                 // component; anywhere deeper the whole term belongs to the lane already chosen.
-                if (lane < 0) {
-                    Ldiff += direct * diffBrdf;
-                    Lspec += direct * specBrdf;
-                } else if (lane == 1) {
-                    Lspec += direct * (diffBrdf + specBrdf);
-                } else {
-                    Ldiff += direct * (diffBrdf + specBrdf);
+                float3 neeDiffuse = lane == 1
+                        ? float3(0.0) : direct * (lane < 0 ? diffBrdf : diffBrdf + specBrdf);
+                float3 neeSpecular = lane == 0
+                        ? float3(0.0) : direct * (lane < 0 ? specBrdf : diffBrdf + specBrdf);
+                Ldiff += neeDiffuse;
+                Lspec += neeSpecular;
+                if (atPrimaryVertex) {
+                    primaryDiffuse += neeDiffuse;
+                    primarySpecular += neeSpecular;
                 }
             }
         }
@@ -385,13 +477,15 @@ public PathRadiance tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             float3 risDiffuse = shadeReservoir(r, hitPos, n, v, rd, diffAlb, F0, rough, false,
                                                activeSss, risSpecular);
             float3 direct = throughput;
-            if (lane < 0) {
-                Ldiff += direct * risDiffuse;
-                Lspec += direct * risSpecular;
-            } else if (lane == 1) {
-                Lspec += direct * (risDiffuse + risSpecular);
-            } else {
-                Ldiff += direct * (risDiffuse + risSpecular);
+            float3 risDiffuseTerm = lane == 1
+                    ? float3(0.0) : direct * (lane < 0 ? risDiffuse : risDiffuse + risSpecular);
+            float3 risSpecularTerm = lane == 0
+                    ? float3(0.0) : direct * (lane < 0 ? risSpecular : risDiffuse + risSpecular);
+            Ldiff += risDiffuseTerm;
+            Lspec += risSpecularTerm;
+            if (atPrimaryVertex) {
+                primaryDiffuse += risDiffuseTerm;
+                primarySpecular += risSpecularTerm;
             }
         }
 
@@ -418,8 +512,14 @@ public PathRadiance tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                             * backNdl * celestialLight.illuminance * visB;
                     if (lane == 1) {
                         Lspec += transmission;
+                        if (atPrimaryVertex) {
+                            primarySpecular += transmission;
+                        }
                     } else {
                         Ldiff += transmission;
+                        if (atPrimaryVertex) {
+                            primaryDiffuse += transmission;
+                        }
                     }
                 }
             }
@@ -482,13 +582,15 @@ public PathRadiance tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         }
     }
     PathRadiance result;
-    result.diffuse = Ldiff;
-    result.specular = Lspec;
+    result.diffuse = primaryDiffuse + (Ldiff - primaryDiffuse) * indirectWeight;
+    result.specular = primarySpecular + (Lspec - primarySpecular) * indirectWeight;
     // Negative when this sample never traced that lane (the other lobe was chosen, or the path ended at
     // the primary vertex). The caller averages only over the samples that did trace it — dividing by the
     // full sample count would bias both distances toward zero.
     result.diffHitDist = diffHitDist;
     result.specHitDist = specHitDist;
+    result.primaryDiffuse = primaryDiffuse;
+    result.primarySpecular = primarySpecular;
     return result;
 }
 
@@ -504,6 +606,23 @@ void main() {
     uint2 dimensions = DispatchRaysDimensions().xy;
     int2 pix = int2(dispatchIndex);
     uint spp = max(worldPush.spp, 1u);
+    uint apertureSamples = max(uint(worldPush.dofSamples), 1u);
+    // The camera ray of every aperture sample, rebuilt here rather than read from the guide pass: the guide
+    // pass keeps one sample per pixel because a guide is a per-pixel surface property, and a lens-offset sample
+    // would move the depth and motion a denoiser reprojects with. Both passes derive the ray from the same
+    // pixel, jitter, frame and lens parameters, so they agree on where the eye and the pupil are.
+    float2 size = float2(dimensions);
+    float2 uv = (float2(pix) + 0.5) / size;
+    float2 jndc = (uv + worldPush.jitter / size) * 2.0 - 1.0;
+    float4 nearH = mul(worldPush.invViewProj, float4(jndc.x, jndc.y, 1.0, 1.0));
+    float4 farH = mul(worldPush.invViewProj, float4(jndc.x, jndc.y, 0.0, 1.0));
+    float3 nearP = nearH.xyz / nearH.w;
+    float3 farP = farH.xyz / farH.w;
+    float3 axisEye = nearP + worldPush.camOffset;
+    float3 axisDir = normalize(farP - nearP);
+    float rayConeSpread = primaryRayConeSpread(jndc, size, axisDir);
+    uint baseSeed = (dispatchIndex.x * 1973u + dispatchIndex.y * 9277u + 26699u)
+            ^ (worldPush.frameIndex * 2654435761u);
     uint pixelIndex = dispatchIndex.y * dimensions.x + dispatchIndex.x;
     ConstPtr<PackedPathSegment> queue = ConstPtr<PackedPathSegment>(pc.pathQueueAddr);
     float3 frameDiffuse = float3(0.0, 0.0, 0.0);
@@ -512,24 +631,43 @@ void main() {
     float specHitDistSum = 0.0;
     uint diffHitDistCount = 0u;
     uint specHitDistCount = 0u;
+    // One path per aperture sample beyond the first.
+    //
+    // The per-frame sample the platform has always taken is the guide pass's, one point of the pupil per pixel,
+    // resolved over time by the denoiser. At a large circle of confusion that point is most of what a pixel sees,
+    // so the disc stays speckled and its edge stair-steps however long the history is. Sweeping the pupil within
+    // the frame is what fixes that, and it is the only thing that does: the disc exists solely at the points of
+    // the pupil a pixel's own rays started from, so a broader filter has nothing more to gather from.
+    //
+    // Sample zero is the segment the guide pass queued and is traced by the queue loop below, so this loop only
+    // traces the samples after it and the frame's cost is the guide pass's ray plus one path per extra sample.
+    // The samples are divided out below, so their mean is the frame's estimate of the aperture integral.
+    // An extra aperture sample exists to change which surface the pixel sees through that part of the pupil, and
+    // the lighting of that surface is what it has to get right. Tracing a whole path for it would multiply the
+    // frame's entire ray budget -- every extra bounce, NEE and RIS estimate -- to re-answer a question the first
+    // sample already answered, so these samples stop at the vertex the camera ray reached and contribute no
+    // indirect lighting; the first sample's indirect lighting stands for all of them. Both are averaged over the
+    // sample count below, which is what makes the total the aperture's mean over the whole path rather than a
+    // brightened sum or a darkened one.
     uint recordIndex = pixelIndex;
+    for (uint apertureSample = 1u; apertureSample < apertureSamples; ++apertureSample) {
+        uint apertureSeed = baseSeed ^ (apertureSample * 2654435761u);
+        apertureSeed = pcg(apertureSeed);
+        PathSegment camera = apertureCameraSegment(axisEye, axisDir, rayConeSpread, uint2(pix),
+                apertureSample, apertureSeed);
+        accumulatePath(tracePath(camera, uint2(pix), apertureSample * 0x9e3779b9u, PRIMARY_ONLY_BOUNCES),
+                frameDiffuse, frameSpecular, diffHitDistSum, specHitDistSum,
+                diffHitDistCount, specHitDistCount);
+    }
+    // Sample zero of the pupil, as the guide pass traced it. Its radiance carries the guides' own surface, which
+    // is the one a denoiser reconstructs, so this is the lane that has to be in the frame.
     for (uint leaf = 0u; leaf < MAX_PATH_SEGMENTS; ++leaf) {
         PackedPathSegment packed = queue[recordIndex];
         PathSegment segment = unpackPathSegment(packed);
         for (uint s = 0u; s < spp; ++s) {
-            PathRadiance radiance = tracePath(segment, uint2(pix), s + leaf * spp);
-            frameDiffuse += radiance.diffuse;
-            frameSpecular += radiance.specular;
-            // Averaged over the samples that actually traced the lane, not over every sample: a lane is
-            // only taken by the paths whose primary vertex sampled that lobe.
-            if (radiance.diffHitDist >= 0.0) {
-                diffHitDistSum += radiance.diffHitDist;
-                diffHitDistCount++;
-            }
-            if (radiance.specHitDist >= 0.0) {
-                specHitDistSum += radiance.specHitDist;
-                specHitDistCount++;
-            }
+            accumulatePath(tracePath(segment, uint2(pix), s + leaf * spp, int(worldPush.maxBounces)),
+                    frameDiffuse, frameSpecular, diffHitDistSum, specHitDistSum,
+                    diffHitDistCount, specHitDistCount);
         }
         if (packed.nextRecord == PATH_NO_NEXT) {
             break;
@@ -543,7 +681,8 @@ void main() {
     // through the denoiser. Pre-exposed, it only bites when a pixel would render >65504x mid-grey — the
     // sun mid-transition, a firefly off a tiny emitter — and ACES 2.0 renders anything a few EV over
     // white as white, so it costs nothing visible.
-    float scale = worldPush.preExposure / float(spp);
+    float scale = worldPush.preExposure / (float(spp) * float(apertureSamples));
+
     float3 storedDiffuse = frameDiffuse * scale;
     float3 storedSpecular = frameSpecular * scale;
     outImage[pix] = float4(clamp(storedDiffuse + storedSpecular, float3(0.0), float3(HALF_MAX)), 1.0);

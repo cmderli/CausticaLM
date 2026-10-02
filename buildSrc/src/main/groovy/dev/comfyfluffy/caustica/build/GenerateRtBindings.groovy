@@ -44,11 +44,19 @@ abstract class GenerateRtBindings extends DefaultTask {
                     G_MOTION: "gMotion", G_SPEC_ALBEDO: "gSpecAlbedo", G_SPEC_MOTION: "gSpecMotion",
                     SCENE: "sceneImage", EXPOSURE: "exposureImage", EXPOSURE_STATE: "exposureState"]],
             [prefix: "EXPOSURE_HIST", source: "pipelines/exposure_hist/main.comp.slang", resources: [
-                    COLOR: "colorImage", BINS: "histBins", DEPTH: "depthImage", ALBEDO: "albedoImage"]],
+                    COLOR: "colorImage", BINS: "histBins", DEPTH: "depthImage", ALBEDO: "albedoImage",
+                    FOCUS: "focusScratch"]],
             [prefix: "EXPOSURE_RESOLVE", source: "pipelines/exposure_resolve/main.comp.slang", resources: [
-                    HIST_BINS: "histBins", IMAGE: "exposureImage", STATE: "stateBuf"]],
+                    HIST_BINS: "histBins", IMAGE: "exposureImage", STATE: "stateBuf", FOCUS: "focusScratch"]],
             [prefix: "MOTION_BLUR", source: "pipelines/motion_blur/main.comp.slang", resources: [
                     SOURCE: "sceneImage", MOTION: "gMotion", DEPTH: "gDepth", OUTPUT: "outputImage"]],
+            // The stages of this pass reach different subsets of one descriptor set, and Slang emits one module
+            // per entry point carrying only the globals that entry point reaches -- so reflecting any one of them
+            // yields a renumbered layout, not the shared one. The set is therefore declared here, which is what
+            // the Java layout and each stage's own binding declarations are checked against.
+            [prefix: "DEPTH_OF_FIELD", source: "pipelines/depth_of_field/main.comp.slang", declared: [
+                    SCENE: 0, DEPTH: 1, MOTION: 2, GATHERED: 3, HISTORY: 4, GATHERED_SAMPLER: 5,
+                    UPSAMPLE: 6, SHARP_SOURCE: 7]],
             [prefix: "BLOOM", source: "pipelines/bloom/main.comp.slang", resources: [
                     OUTPUT: "dstImage", SOURCE: "srcImage", EXPOSURE: "exposureImage"]],
             [prefix: "DENOISE", source: "pipelines/denoise/main.comp.slang", resources: [
@@ -99,6 +107,21 @@ abstract class GenerateRtBindings extends DefaultTask {
         scratchDir.mkdirs()
 
         PIPELINES.each { spec ->
+            if (spec.declared != null) {
+                // A pass whose stages declare their own bindings: the numbers in the spec are the contract, and
+                // the shaders are compiled with the same attributes, so there is nothing to reflect here. The
+                // contiguity check below still runs, which is what catches a gap in the declared set.
+                spec.declared.each { suffix, index ->
+                    constants["${spec.prefix}_${suffix}"] = index as int
+                }
+                def declaredIndices = (spec.declared.values() as List<Integer>).sort()
+                if (declaredIndices != (0..<declaredIndices.size()).toList()) {
+                    throw new GradleException("${spec.prefix} declared bindings are not contiguous: ${declaredIndices}")
+                }
+                constants["${spec.prefix}_SET"] = 0
+                constants["${spec.prefix}_BINDING_COUNT"] = declaredIndices.size()
+                return
+            }
             def reflection = reflect(new File(shaderRoot.get().asFile, spec.source as String), scratchDir)
             def reflected = reflection.parameters.findAll { it.binding?.kind == "descriptorTableSlot" }
                     .collectEntries { [(it.name): it.binding] }

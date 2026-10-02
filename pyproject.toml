@@ -1,7 +1,7 @@
 [project]
 name = "caustica-tools"
 version = "0.1.0"
-description = "Reproducible Python environment for Caustica's color and exposure tools"
+description = "Reproducible Python environment for CausticaLM's color and exposure tools"
 requires-python = ">=3.14,<3.15"
 dependencies = [
     "numpy>=2.5,<3",

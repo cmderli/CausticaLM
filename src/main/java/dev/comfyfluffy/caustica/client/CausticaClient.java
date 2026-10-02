@@ -21,7 +21,7 @@ public final class CausticaClient implements ClientModInitializer {
 
 	@Override
 	public void onInitializeClient() {
-		CausticaMod.LOGGER.info("Caustica client initialized");
+		CausticaMod.LOGGER.info("CausticaLM client initialized");
 
 		// Class-init runs DebugScreenEntries.register(...) via its ID field; touching the class here
 		// makes the entry discoverable in F3's entry list. Off by default -- the player opts in the

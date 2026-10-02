@@ -69,7 +69,7 @@ public final class RtGpuExecutor {
         this.buildTimeline = createTimeline("RT terrain build timeline");
         this.graphicsTimeline = createTimeline("RT graphics-use timeline");
         createCommandPool();
-        this.thread = new Thread(this::run, "Caustica GPU executor");
+        this.thread = new Thread(this::run, "CausticaLM GPU executor");
         this.thread.setDaemon(true);
         this.thread.start();
     }
@@ -414,7 +414,7 @@ public final class RtGpuExecutor {
                     .stageMask(VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT_KHR);
             VkSubmitInfo2.Buffer submit = VkSubmitInfo2.calloc(1, stack).sType$Default()
                     .pCommandBufferInfos(command).pSignalSemaphoreInfos(signal);
-            VulkanDiagnostics.noteQueueSubmission(computeQueue.vkQueue(), "Caustica compute queue");
+            VulkanDiagnostics.noteQueueSubmission(computeQueue.vkQueue(), "CausticaLM compute queue");
             synchronized (ctx.deviceQueueHostLock()) {
                 RtContext.check(org.lwjgl.vulkan.KHRSynchronization2.vkQueueSubmit2KHR(
                         computeQueue.vkQueue(), submit, 0L), "vkQueueSubmit2KHR(RT GPU executor)");

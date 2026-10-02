@@ -1,5 +1,8 @@
 // Strided log2-luminance histogram over the post-RR trace color. Metering after RR avoids the
 // Jensen bias that Monte-Carlo noise introduces into the logarithmic average.
+//
+// The same walk also solves the camera's autofocus point: the centre-weighted distance to the nearest
+// non-sky surface, which is where a camera's centre AF point would lock.
 
 import display_common;
 import bindings;
@@ -15,6 +18,12 @@ static const float3 ACESCG_LUMA = float3(0.27222872, 0.67408177, 0.05368952);
 // flushes all three population bins. Per-pixel atomics stay in shared memory; only non-empty bins
 // pay global atomics.
 groupshared uint localBins[768];
+// The autofocus measurement's own pass, autofocus.comp.slang, writes lane 0 of focusScratch and its weight in
+// lane 1. This pass only CLEARS it, because the focus measurement is a nearest-surface rule over a small box
+// and not a sum over the frame: leaving the accumulation here would mean two different measurements writing the
+// same buffer.
+static const uint FOCUS_SUM = 0u;
+static const uint FOCUS_WEIGHT = 1u;
 
 [shader("compute")]
 [numthreads(16, 16, 1)]
@@ -22,6 +31,10 @@ void main(uint3 dispatchId : SV_DispatchThreadID, uint groupIndex : SV_GroupInde
     localBins[groupIndex] = 0u;
     localBins[256u + groupIndex] = 0u;
     localBins[512u + groupIndex] = 0u;
+    if (dispatchId.x == 0u && dispatchId.y == 0u) {
+        focusScratch[FOCUS_SUM] = 0.0;
+        focusScratch[FOCUS_WEIGHT] = 0.0;
+    }
     GroupMemoryBarrierWithGroupSync();
 
     int2 pix = int2(dispatchId.xy * pc.stride);
@@ -56,6 +69,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID, uint groupIndex : SV_GroupInde
                 uint unused;
                 InterlockedAdd(localBins[weightedBin], fixedWeight, unused);
             }
+
         }
     }
 

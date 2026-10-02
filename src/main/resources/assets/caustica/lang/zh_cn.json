@@ -3,7 +3,9 @@
 
 	"caustica.options.rt.exposureMode": "曝光",
 	"caustica.options.rt.exposureMode.tooltip": "决定如何将光线追踪图像映射到显示亮度。自动会适应场景亮度；手动会直接使用曝光值。",
+
 	"caustica.options.rt.exposureMode.auto": "自动",
+
 	"caustica.options.rt.exposureMode.manual": "手动",
 
 	"caustica.options.rt.manualEv": "曝光 EV",
@@ -29,8 +31,10 @@
 
 	"caustica.options.rt.motionBlur": "动态模糊",
 	"caustica.options.rt.motionBlur.tooltip": "沿每个像素的真实运动矢量，在快门时间内对画面做积分模糊。相机转动和移动物体会像胶片快门一样拖影；开销为一个显示分辨率的计算通道。",
+
 	"caustica.options.rt.motionBlurShutter": "快门角度",
 	"caustica.options.rt.motionBlurShutter.tooltip": "虚拟快门在一个帧间隔内保持开启的比例，单位为度：180 度是胶片标准（半个帧间隔），360 度全程开启，0 度关闭拖影。",
+
 	"caustica.options.rt.motionBlurSamples": "动态模糊采样数",
 	"caustica.options.rt.motionBlurSamples.tooltip": "沿拖影方向平均的采样点数。数值越高，快速运动越平滑；8 是合适的默认值。",
 
@@ -41,13 +45,126 @@
 	"caustica.options.rt.hdrPeak.tooltip": "高光回落目标的绝对亮度（nits）。请设为显示器的 HDR 峰值亮度。",
 
 	"caustica.options.rt.debugView": "调试视图",
-	"caustica.options.rt.debugView.tooltip": "显示光线追踪的中间缓冲区，而不是最终图像。",
+	"caustica.options.rt.debugView.tooltip": "在正常帧渲染完成后，查看光线追踪缓冲区和曝光诊断信息。",
+
 	"caustica.options.rt.debugView.0": "关闭",
+
 	"caustica.options.rt.debugView.1": "法线",
+
 	"caustica.options.rt.debugView.2": "反照率",
+
 	"caustica.options.rt.debugView.3": "深度",
+
 	"caustica.options.rt.debugView.4": "粗糙度",
+
 	"caustica.options.rt.debugView.5": "运动",
+
 	"caustica.options.rt.debugView.6": "高光",
-	"caustica.options.rt.debugView.7": "高光运动"
+
+	"caustica.options.rt.debugView.7": "高光运动",
+
+	"caustica.options.rt.gamma": "伽马",
+	"caustica.options.rt.gamma.tooltip": "变换后的亮度伽马。低于 1.00 的数值会提亮阴影与中间调，同时保留黑、白与色彩比例。",
+
+	"caustica.options.rt.depthOfField": "景深",
+	"caustica.options.rt.depthOfField.tooltip": "让主射线穿过相机光圈进行追踪，使失焦的内容像真实镜头那样模糊。视野选项决定焦距，因此在相同光圈与对焦距离下，视野越窄对焦越紧实。",
+
+	"caustica.options.rt.dofMode": "景深模式",
+	"caustica.options.rt.dofMode.tooltip": "虚化是怎么产生的。简单模式从成片图像里收集弥散圆：稳定、开销低，而且清晰的前景是叠在虚化背景之上，而不是被拖进去。物理模式让主光线真正穿过光圈，虚化是镜头真实的散景，代价是光线开销，以及大光圈下可见的采样痕迹。",
+
+	"caustica.options.rt.dofMode.simple": "简单",
+
+	"caustica.options.rt.dofMode.physical": "物理",
+
+	"caustica.options.rt.dofMode.artistic": "艺术",
+
+	"caustica.options.rt.dofArtisticBlur": "虚化强度",
+	"caustica.options.rt.dofArtisticBlur.tooltip": "艺术模式绘制的最大虚化，占画面高度的百分比。这是唯一的强度控制，在任何视角、分辨率和对焦距离下含义一致。低于 1% 是轻微分离，1～2% 是明显柔和的背景，超过 3% 就变成吞掉焦平面以外一切的特效。",
+
+
+	"caustica.options.rt.dofMaxBlur": "最大虚化",
+	"caustica.options.rt.dofMaxBlur.tooltip": "最大弥散圆，占画面高度的百分比。大光圈近对焦时，远景的虚化会超过画面高度；若不加限制，一米以外的一切都会共用同一个模糊量，画面就会处处发糊，而不是\"主体清晰、背景虚化\"。调高会让虚化更深，调低则保留更多清晰范围。",
+
+	"caustica.options.rt.dofSamples": "景深采样数",
+	"caustica.options.rt.dofSamples.tooltip": "每个像素穿过的光圈点数。光线追踪只覆盖一小块弥散圆，光圈的其余部分由后续通道从成片图像中收集，所以这个数值决定的是追踪部分会不会闪烁，而不是虚化的大小。每增加一个采样，每个像素只多一条光线，而不是多一整条完整路径。",
+
+	"caustica.options.rt.apertureMode": "光圈",
+	"caustica.options.rt.apertureMode.tooltip": "自动会每帧根据测光场景计算 f 值；手动则固定使用「光圈大小」的数值，就像镜头上的光圈环。光圈越大（f 值越小）背景越模糊，进光量也越多。",
+
+	"caustica.options.rt.apertureMode.auto": "自动",
+
+	"caustica.options.rt.apertureMode.manual": "手动",
+
+	"caustica.options.rt.aperture": "光圈大小",
+	"caustica.options.rt.aperture.tooltip": "f 值：焦距除以入射瞳直径。数值越小（光圈越大）景深越浅、画面越亮；数值越大（光圈越小）场景中保持清晰的范围越多，但画面会变暗。",
+
+	"caustica.options.rt.shutterMode": "快门时间模式",
+	"caustica.options.rt.shutterMode.tooltip": "自动会每帧根据测光场景计算快门时间；手动则固定使用「快门时间」的数值。",
+
+	"caustica.options.rt.shutterMode.auto": "自动",
+
+	"caustica.options.rt.shutterMode.manual": "手动",
+
+	"caustica.options.rt.shutterTime": "快门时间",
+	"caustica.options.rt.shutterTime.tooltip": "虚拟快门保持开启的时间长度。时间越长画面越亮（开启动态模糊时拖影也会越长）；时间越短画面越暗。",
+
+	"caustica.options.rt.focusMode": "对焦",
+	"caustica.options.rt.focusMode.tooltip": "自动会对焦在画面中央所指的内容上，就像相机的中央自动对焦点；手动则以固定距离对焦。",
+
+	"caustica.options.rt.focusMode.auto": "自动",
+
+	"caustica.options.rt.focusMode.manual": "手动",
+
+	"caustica.options.rt.focusDistance": "对焦距离",
+	"caustica.options.rt.focusDistance.tooltip": "清晰平面与相机之间的距离，单位为米。位于该距离的内容会保持清晰，较近或较远的内容则会依光圈设置产生不同程度的模糊。",
+
+	"caustica.options.rt.autoValue": " (自动)",
+
+	"caustica.options.rt.hdrUiBrightness": "HDR 界面亮度",
+	"caustica.options.rt.hdrUiBrightness.tooltip": "在 HDR 显示器上，指派给以 SDR 制作的界面的绝对亮度（单位为 nits）。BT.2408 将 SDR 图形白色定为 203 nits；ACES HDR 输出转换在 1000 nit 峰值下，会将世界中的白色表面定在接近 107 nits。",
+
+	"caustica.options.rt.denoiser": "降噪器",
+	"caustica.options.rt.denoiser.tooltip": "选择由哪种降噪器清理路径追踪图像。自动会挑选这台机器能运行得最好的选项。DLSS Ray Reconstruction 需要 NVIDIA RTX 显卡，NRD 需要其原生库，内置降噪器则一律可用，但因为没有帧历史记录而较为柔和。关闭会显示未经处理的追踪图像。",
+
+	"caustica.options.rt.denoiser.auto": "自动",
+
+	"caustica.options.rt.denoiser.dlss-rr": "DLSS Ray Reconstruction",
+
+	"caustica.options.rt.denoiser.nrd": "NRD",
+
+	"caustica.options.rt.denoiser.builtin": "内置",
+
+	"caustica.options.rt.denoiser.off": "关闭",
+
+	"caustica.options.rt.superResolutionMethod": "超分辨率方式",
+	"caustica.options.rt.superResolutionMethod.tooltip": "选择由哪种升频器把渲染分辨率的图像送上屏幕。自动会在已安装 FSR 运行库时使用 FSR，否则使用内置的双线性解析。双线性一律可用，但较为柔和。",
+
+	"caustica.options.rt.superResolutionMethod.auto": "自动",
+
+	"caustica.options.rt.superResolutionMethod.fsr": "FSR",
+
+	"caustica.options.rt.superResolutionMethod.bilinear": "双线性",
+
+	"caustica.options.rt.superResolution": "超分辨率",
+	"caustica.options.rt.superResolution.tooltip": "世界在缩放到屏幕之前进行光线追踪的渲染分辨率。较低的模式渲染较少像素并更积极地放大，以换取更高帧率；较高的模式渲染更多像素，以获得更锐利的图像。DLSS Ray Reconstruction 会使用自己对应的模式。",
+
+	"caustica.options.rt.superResolution.0": "原生 AA",
+
+	"caustica.options.rt.superResolution.1": "质量",
+
+	"caustica.options.rt.superResolution.2": "平衡",
+
+	"caustica.options.rt.superResolution.3": "性能",
+
+	"caustica.options.rt.superResolution.4": "超高性能",
+
+	"caustica.options.rt.debugView.8": "曝光伪色",
+
+	"caustica.options.rt.debugView.9": "测光权重",
+
+	"caustica.options.rt.debugView.10": "弥散圆",
+
+	"caustica.options.rt.debugView.11": "自动对焦目标",
+
+	"caustica.options.rt.debugView.12": "虚化半径（实测）"
 }

@@ -1,10 +1,10 @@
-# Caustica License
+# CausticaLM License
 
 SPDX-License-Identifier: LGPL-3.0-or-later
 
 Copyright (c) 2026 ComfyFluffy and contributors
 
-Caustica's project-owned source code and documentation are licensed under the
+CausticaLM's project-owned source code and documentation are licensed under the
 GNU Lesser General Public License, version 3.0 or any later version published by
 the Free Software Foundation.
 

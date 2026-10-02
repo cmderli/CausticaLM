@@ -1,12 +1,12 @@
 # Third-Party Notices
 
-Caustica's project-owned code is licensed under `LGPL-3.0-or-later`. This file
+CausticaLM's project-owned code is licensed under `LGPL-3.0-or-later`. This file
 documents third-party components and license boundaries that are not changed by
-Caustica's license.
+CausticaLM's license.
 
 ## NVIDIA DLSS / NGX SDK
 
-Caustica can build and distribute release artifacts that include NVIDIA DLSS/NGX
+CausticaLM can build and distribute release artifacts that include NVIDIA DLSS/NGX
 SDK runtime components, including DLSS Ray Reconstruction and Frame Generation
 libraries. These NVIDIA components are proprietary third-party software and are
 not licensed under the LGPL.
@@ -15,7 +15,7 @@ The NVIDIA SDK components remain subject to the NVIDIA RTX SDKs license:
 
 <https://github.com/NVIDIA/DLSS/blob/main/LICENSE.txt>
 
-The LGPL license grant for Caustica does not grant rights to NVIDIA SDK
+The LGPL license grant for CausticaLM does not grant rights to NVIDIA SDK
 components. Redistribution and use of those components must comply with
 NVIDIA's license terms.
 
@@ -28,12 +28,12 @@ Bundled NVIDIA SDK runtime libraries may include files matching:
 - `caustica/natives/linux-x64/libnvidia-ngx-dlssd.so*`
 - `caustica/natives/linux-x64/libnvidia-ngx-dlssg.so*`
 
-Caustica's `ngxshim` native library is project-owned glue code and follows
-Caustica's project license unless otherwise noted.
+CausticaLM's `ngxshim` native library is project-owned glue code and follows
+CausticaLM's project license unless otherwise noted.
 
 ## NVIDIA Real-time Denoisers (NRD)
 
-Caustica can build and distribute release artifacts that include NVIDIA Real-time
+CausticaLM can build and distribute release artifacts that include NVIDIA Real-time
 Denoisers, linked statically into the `caustica_nrd` shim together with its
 SPIR-V shader blobs. NRD is proprietary third-party software and is not licensed
 under the LGPL.
@@ -42,7 +42,7 @@ NRD remains subject to the NVIDIA RTX SDKs license:
 
 <https://github.com/NVIDIA-RTX/NRD/blob/main/LICENSE.txt>
 
-The LGPL license grant for Caustica does not grant rights to NRD. Redistribution
+The LGPL license grant for CausticaLM does not grant rights to NRD. Redistribution
 and use of NRD must comply with NVIDIA's license terms.
 
 This software contains source code provided by NVIDIA Corporation.
@@ -56,7 +56,7 @@ matching:
 - `caustica/natives/windows-x64/caustica_nrd.dll`
 - `caustica/natives/linux-x64/libcaustica_nrd.so`
 
-Caustica's `caustica_nrd` shim is project-owned glue code and follows Caustica's
+CausticaLM's `caustica_nrd` shim is project-owned glue code and follows CausticaLM's
 project license unless otherwise noted. Its host-side shader ports
 (`shaders/pipelines/nrd_frontend`, `shaders/pipelines/nrd_backend`) reimplement
 encoding helpers described in NRD's `NRD.hlsli` and carry the same notice.

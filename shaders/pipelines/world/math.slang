@@ -121,6 +121,52 @@ public float primaryRayConeSpread(float2 ndc, float2 size, float3 dir) {
     return max(max(length(cross(dir, dx)), length(cross(dir, dy))), RAY_CONE_MIN_SPREAD);
 }
 
+// Uniform point on the unit disc (Shirley's concentric mapping). The camera aperture is a disc, and a
+// uniform-area sample is what makes the out-of-focus disc flat rather than centre-heavy: an
+// angle-uniform/radius-uniform pair would pile samples at the middle of the bokeh where a real lens has
+// the least light.
+public float2 sampleDiscConcentric(float u1, float u2) {
+    float2 offset = float2(2.0 * u1 - 1.0, 2.0 * u2 - 1.0);
+    if (offset.x == 0.0 && offset.y == 0.0) {
+        return float2(0.0, 0.0);
+    }
+    float radius;
+    float theta;
+    if (abs(offset.x) > abs(offset.y)) {
+        radius = offset.x;
+        theta = 0.25 * PI * (offset.y / offset.x);
+    } else {
+        radius = offset.y;
+        theta = 0.5 * PI - 0.25 * PI * (offset.x / offset.y);
+    }
+    return radius * float2(cos(theta), sin(theta));
+}
+
+// The R2 low-discrepancy sequence's two irrational steps, applied in two dimensions at once.
+static const float R2_X = 0.7548776662466927;
+static const float R2_Y = 0.5698402909980532;
+
+// A point on the camera's entrance pupil, in the same camera-relative space as the primary ray's origin.
+// The pupil lies in the image plane, which is the plane the view's x/y axes span, so the disc is sampled
+// there and offset along them.
+//
+// The sample is NOT white noise: it is one point of a per-pixel R2 sequence indexed by the frame, so the
+// per-pixel offset from frame to frame is small and nearly constant while neighbouring pixels still sit at
+// different points of the disc. A denoiser can separate that from scene change; an independent random lens
+// point per pixel per frame is indistinguishable from flicker, and temporal filters respond by smearing the
+// frame, which is worst exactly where the circles of confusion are largest (a subject close to the camera).
+//
+// sampleIndex names the several points of the pupil one pixel sweeps in a frame. It advances along the SAME
+// sequence as the frame rather than starting a second one, so a pixel's samples for this frame are consecutive
+// points of the sequence — spread over the disc rather than collapsed onto one arc of it — and the whole set
+// keeps moving coherently from frame to frame alongside the temporal history.
+public float3 sampleLensDisc(float lensRadius, float2 pixel, uint frameIndex, uint sampleIndex) {
+    float2 sequence = frac(float2(0.5, 0.5) + pixel * 0.61803398875
+            + (float(frameIndex) + float(sampleIndex) * 0.61803398875) * float2(R2_X, R2_Y));
+    float2 disc = sampleDiscConcentric(sequence.x, sequence.y) * max(lensRadius, 0.0);
+    return float3(disc.x, disc.y, 0.0);
+}
+
 // Cosine-weighted hemisphere sample about n (Malley's method). For a Lambertian BRDF this is the
 // importance-sampling match: BRDF*cos/pdf = (albedo/PI)*cos / (cos/PI) = albedo, so the continuation
 // throughput is just *= albedo with no PI/cos bookkeeping left over.

@@ -71,6 +71,7 @@ public final class RtFrameStats {
                     "frame.exposure",
                     "frame.recon",
                     "frame.upscale",
+                    "frame.depthOfField",
                     "frame.bloom",
                     "frame.displayMap",
                     "frame.debugPresent",

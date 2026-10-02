@@ -386,24 +386,84 @@ def currentNativePlatformDir = {
 	return os.name.toLowerCase(java.util.Locale.ROOT) + "/" + arch
 }
 def nrdShimIncludes = ["libcaustica_nrd.so", "caustica_nrd.dll"]
+// A shim built on another machine (or before the last `clean`) can be kept under native/nrd_shim/prebuilt,
+// one directory per platform, and is bundled exactly like a locally built one. `clean` removes build/, so
+// without this a locally built shim would have to be rebuilt before the next jar could carry it.
+def nrdPrebuiltRoot = file("native/nrd_shim/prebuilt")
+// A shim built out of band lives under a gitignored build/ directory, so the directory the bundling task
+// watches does not exist until someone builds one. Create it at configuration time: a missing input
+// directory fails dependency resolution, not just the task.
+nrdShimOutDir.mkdirs()
+// Cross-compiled shims (native/nrd_shim/build_cross.sh) land beside the host build, one directory per
+// platform, so the same task stages the host build and every cross build it finds.
+def nrdCrossRoot = layout.buildDirectory.dir("native/nrd_shim").get().asFile
+def nrdCrossShims = {
+	def found = [:]
+	// `clean` deletes build/, so the scan target is absent on a clean tree: an empty result, not an error.
+	if (!nrdCrossRoot.isDirectory()) {
+		return found
+	}
+	nrdCrossRoot.eachDir { platformDir ->
+		if (platformDir.name == ngxShimConfig || platformDir.name.startsWith("build")) {
+			return
+		}
+		// build_cross.sh stages each cross build under a platform directory of its own, so this scan reads
+		// the same layout it writes.
+		def files = fileTree(new File(platformDir, ngxShimConfig)) { include nrdShimIncludes }.files
+		if (!files.empty) {
+			found[platformDir.name] = files
+		}
+	}
+	if (nrdPrebuiltRoot.isDirectory()) {
+		nrdPrebuiltRoot.eachDir { platformDir ->
+			def files = fileTree(platformDir) { include nrdShimIncludes }.files
+			if (!files.empty) {
+				found[platformDir.name] = files
+			}
+		}
+	}
+	found
+}
 def bundleNrdNatives = tasks.register("bundleNrdNatives") {
-	description = "Bundles a built NRD shim into the mod resources when one is present."
+	description = "Bundles every built NRD shim (host and cross-compiled) into the mod resources."
 	inputs.files(fileTree(nrdShimOutDir) { include nrdShimIncludes }).withPropertyName("nrdShim")
+	inputs.files({ nrdCrossShims().values().flatten() }).withPropertyName("nrdCrossShims").optional()
+	inputs.files(fileTree(nrdPrebuiltRoot) { include nrdShimIncludes }).withPropertyName("nrdPrebuiltShims")
+			.optional()
 	outputs.dir(nrdNativeGenRoot)
 	outputs.upToDateWhen { false }
 	doLast {
 		delete(nrdNativeGenRoot)
-		def platformDir = currentNativePlatformDir()
+		def staged = 0
 		def found = fileTree(nrdShimOutDir) { include nrdShimIncludes }.files
 		if (found.empty) {
-			logger.lifecycle("NRD shim not built in ${nrdShimOutDir}; packaging without it (NRD stays unavailable)")
-			return
+			found = fileTree(new File(nrdPrebuiltRoot, currentNativePlatformDir())) {
+				include nrdShimIncludes
+			}.files
 		}
-		copy {
-			from found
-			into new File(nrdNativeGenRoot.get().asFile, "caustica/natives/${platformDir}")
+		if (found.empty) {
+			logger.lifecycle("NRD shim not built in ${nrdShimOutDir} and none prebuilt for "
+					+ "${currentNativePlatformDir()}; packaging without a host shim")
+		} else {
+			def platformDir = currentNativePlatformDir()
+			copy {
+				from found
+				into new File(nrdNativeGenRoot.get().asFile, "caustica/natives/${platformDir}")
+			}
+			logger.lifecycle("Bundled NRD shim for ${platformDir}: ${found*.name.join(', ')}")
+			staged++
 		}
-		logger.lifecycle("Bundled NRD shim for ${platformDir}: ${found*.name.join(', ')}")
+		nrdCrossShims().each { platform, files ->
+			copy {
+				from files
+				into new File(nrdNativeGenRoot.get().asFile, "caustica/natives/${platform}")
+			}
+			logger.lifecycle("Bundled NRD shim for ${platform}: ${files*.name.join(', ')}")
+			staged++
+		}
+		if (staged == 0) {
+			logger.lifecycle("No NRD shim found; NRD stays unavailable")
+		}
 	}
 }
 

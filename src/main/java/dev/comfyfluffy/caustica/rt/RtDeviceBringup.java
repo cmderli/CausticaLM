@@ -337,14 +337,14 @@ public final class RtDeviceBringup {
 
     public static int computeQueueFamilyIndex() {
         if (!computeQueueReserved()) {
-            throw new IllegalStateException("Caustica compute queue was not reserved");
+            throw new IllegalStateException("CausticaLM compute queue was not reserved");
         }
         return computeQueueFamilyIndex;
     }
 
     public static int computeQueueIndex() {
         if (!computeQueueReserved()) {
-            throw new IllegalStateException("Caustica compute queue was not reserved");
+            throw new IllegalStateException("CausticaLM compute queue was not reserved");
         }
         return computeQueueIndex;
     }
@@ -366,7 +366,7 @@ public final class RtDeviceBringup {
 
         VkDeviceQueueCreateInfo.Buffer requestedQueues = deviceCreateInfo.pQueueCreateInfos();
         if (requestedQueues == null) {
-            CausticaMod.LOGGER.warn("Caustica RT disabled: Vulkan device creation has no queue requests");
+            CausticaMod.LOGGER.warn("CausticaLM RT disabled: Vulkan device creation has no queue requests");
             return;
         }
 
@@ -404,7 +404,7 @@ public final class RtDeviceBringup {
 
         if (selectedFamily < 0) {
             CausticaMod.LOGGER.warn(
-                    "Caustica RT disabled: no spare compute-capable Vulkan queue is available");
+                    "CausticaLM RT disabled: no spare compute-capable Vulkan queue is available");
             return;
         }
 

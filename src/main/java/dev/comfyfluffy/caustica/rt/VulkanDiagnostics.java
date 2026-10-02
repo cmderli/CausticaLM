@@ -391,7 +391,7 @@ public final class VulkanDiagnostics {
             CausticaMod.LOGGER.error("  {}", breadcrumb);
         }
         long totalBytes = BUFFERS.values().stream().mapToLong(BufferRange::size).sum();
-        CausticaMod.LOGGER.error("Caustica live BDA buffers: count={}, bytes={}", BUFFERS.size(), formatBytes(totalBytes));
+        CausticaMod.LOGGER.error("CausticaLM live BDA buffers: count={}, bytes={}", BUFFERS.size(), formatBytes(totalBytes));
         RtContext context = RtContext.currentOrNull();
         if (context != null && memoryHeapCount > 0) {
             try (MemoryStack stack = MemoryStack.stackPush()) {

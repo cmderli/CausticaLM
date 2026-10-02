@@ -96,3 +96,12 @@ public bool isDeltaAlpha(float roughness) {
 // Continuations one sample may carry: the camera segment, plus the reflection branch a primary
 // dielectric splits off. Raising this needs a real queue, which is what the continuation buffer is for.
 public static const uint MAX_PATH_SEGMENTS = 2u;
+
+// Bounce limit for a trace that only has to reproduce the lighting at the vertex the camera ray reached.
+// "Bounce" counts shaded vertices, so a limit of one shades exactly that vertex and stops: no continuation
+// ray, no second vertex's NEE or RIS, no roulette. The aperture sweep spends its extra samples here, because
+// what an extra aperture sample is for is that vertex -- which surface the pixel sees through that part of the
+// pupil -- and the lighting it resolves is the expensive part. The path's indirect lighting is kept whole from
+// the sweep's first sample instead of being estimated N times over; PathRadiance.primaryDiffuse/Specular is
+// what makes the two add up to the aperture integral rather than to N times part of it.
+public static const int PRIMARY_ONLY_BOUNCES = 0;
