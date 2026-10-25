@@ -163,9 +163,13 @@ public final class RtPipeline {
             binds.get(WORLD_CELESTIALS).binding(WORLD_CELESTIALS)
                     .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                     .descriptorCount(1).stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR);
+            // Also visible to raygen: world.rgen derives the cloud layer's ambient state from the same
+            // sky-view LUT the miss shader samples. The current DCE removes that fetch when raygen only
+            // asks for cloud shadows, but the binding must not depend on an optimisation to be valid.
             binds.get(WORLD_SKY_VIEW).binding(WORLD_SKY_VIEW)
                     .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-                    .descriptorCount(1).stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR);
+                    .descriptorCount(1)
+                    .stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             binds.get(WORLD_TRANSMITTANCE).binding(WORLD_TRANSMITTANCE)
                     .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                     .descriptorCount(1)

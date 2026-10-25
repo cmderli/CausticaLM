@@ -66,9 +66,9 @@ final class CausticaLangTest {
     }
 
     /**
-     * Every locale carries the whole key set English does. Without this a locale silently falls behind whenever
-     * an option is added, which is invisible in game: Minecraft substitutes the English string and the option
-     * looks translated until someone reads it.
+     * Every locale carries every English key. Without this a locale silently falls behind whenever an option
+     * is added, which is invisible in game: Minecraft substitutes the English string and the option looks
+     * translated until someone reads it.
      */
     @Test
     void everyLocaleCarriesEveryEnglishKey() {

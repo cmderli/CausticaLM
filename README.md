@@ -20,10 +20,11 @@ changes while the renderer is being built.
 
 - Vulkan hardware path-traced world rendering
 - Vendor-neutral reconstruction: DLSS Ray Reconstruction on NVIDIA, a built-in denoiser elsewhere
-- DLSS Frame Generation support (experimental)
+- DLSS Frame Generation at 2x (experimental)
 - HDR output
 - Dynamic entity rendering in the ray-traced scene
 - LabPBR-style material support
+- Volumetric clouds in the path-traced sky, with cloud shadows on direct sunlight
 - OMM (Opacity Micro-Map) + SER (Shader Execution Reordering) optimizations
 
 ## Requirements
@@ -112,6 +113,6 @@ license terms. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## TODO List
 
-- [ ] Nether/End sky, weather, volumetric fog/clouds
+- [ ] Nether/End sky, weather, volumetric fog
 - [ ] LOD
 - [ ] ReSTIR

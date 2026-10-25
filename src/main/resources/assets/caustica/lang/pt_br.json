@@ -166,5 +166,17 @@
 
 	"caustica.options.rt.debugView.11": "Alvo do autofoco",
 
-	"caustica.options.rt.debugView.12": "Raio do desfoque (medido)"
+	"caustica.options.rt.debugView.12": "Raio do desfoque (medido)",
+
+	"caustica.options.rt.cloudDensity": "Densidade das nuvens",
+
+	"caustica.options.rt.cloudDensity.tooltip": "Multiplicador da densidade da camada de nuvens volumétricas. Valores menores deixam as mesmas formas mais finas e translúcidas, permitindo que a luz penetre mais fundo e revelando a espessura da camada; valores maiores fecham as nuvens em uma camada mais densa e opaca.",
+
+	"caustica.options.rt.frameGeneration": "Geração de quadros DLSS",
+
+	"caustica.options.rt.frameGeneration.tooltip": "Gera um quadro interpolado entre os quadros renderizados para saída em 2x. Requer uma GPU NVIDIA compatível e driver adequado.",
+
+	"caustica.options.rt.volumetricClouds": "Nuvens volumétricas",
+
+	"caustica.options.rt.volumetricClouds.tooltip": "Desenha a camada de nuvens volumétricas e suas sombras. Desativar remove a camada de nuvens, o passe temporal e as sombras das nuvens na luz solar direta."
 }

@@ -11,8 +11,14 @@
 // and metal reflections/refractions), false after a diffuse vertex did sun/moon NEE — otherwise the disc
 // would be counted twice against the direct light and show up as fireflies. The atmosphere and the stars
 // are added on every miss at any bounce: stars are not a NEE light, so they never double-count.
+//
+// The cloud deck is then composited over the whole sky: its raymarched scattering is added and its
+// transmittance scales everything behind it, so the sun/moon discs are occluded by the same cloud a
+// reflection of the sky sees. Secondary sky rays raymarch it too, which is what makes clouds soften the
+// sky's ambient contribution to the traced scene.
 import world_common;
 import sky;
+import clouds;
 import bindings;
 
 // Vanilla celestials atlas (sun + moon-phase sprites), bound by RtComposite. Sampled with an explicit LOD
@@ -150,6 +156,15 @@ void main(inout Payload payload) {
         // No separate horizon gate on either body. A set sun or moon goes dark because its extinction is
         // zero below the horizon, matching the NEE visibility test.
     }
+
+    // Clouds sit between the viewer and everything above, so the deck's scattering is added after the
+    // atmosphere, stars and discs and its transmittance scales all three. The miss shader has the ray
+    // origin, so the deck is intersected and marched in world space rather than being a screen-space
+    // overlay; that is also why a secondary miss ray pays for the layer it crosses.
+    CloudState cloud = cloudState(worldPush, state);
+    CloudResult cloudResult = integrateClouds(WorldRayOrigin(), dir, cloud,
+            cloudJitter(dir, worldPush.frameIndex));
+    color = color * cloudResult.transmittance + cloudResult.scattering;
 
     // The sky goes out in absolute scene units at full fp32 — packSky writes the payload's three surface
     // words as raw floats rather than halves, which is why the sun disc's ~1e5 cd/m² needs neither a

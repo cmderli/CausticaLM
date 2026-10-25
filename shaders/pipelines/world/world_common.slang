@@ -27,6 +27,8 @@ public struct WorldPushConstants {
     public uint64_t lightGridCellAddr;   // dense light grid cell headers (0 = global proposals only)
     public uint64_t lightGridSpanAddr;   // packed weighted section spans referenced by cell headers
     public uint64_t pathQueueAddr;       // packed primary -> indirect continuation records
+    public uint64_t cloudNoiseAddr;      // cloud shape/detail/weather noise words (0 = clouds unavailable)
+    public uint64_t cloudShadowAddr;     // cloud shadow-map words, 256x256 bytes (0 = unavailable)
     public uint frameIndex;
 };
 
@@ -105,6 +107,16 @@ public struct WorldPush {
     // the depth-of-field gather covers the remainder of the camera's aperture, and this is where the two halves
     // meet. Zero disables the traced part entirely.
     public float    dofTracedRadiusBlocks;
+    // Volumetric cloud layer. x is the base altitude in trace-space blocks (sea level + the configured
+    // altitude - the terrain rebase origin), y the layer thickness, z the coverage in 0..1, and w the
+    // density multiplier.
+    public float4   cloudParams0;
+    // xz is the world-pinned noise anchor reduced mod 4096 (terrain rebase origin plus wind drift), so
+    // the cloud field stays fixed in the world as the terrain rebase moves the traced coordinate origin.
+    // z is the raymarch step count (0 = clouds off), w the sea level in trace-space blocks. Together
+    // with x it recovers the deck's altitude for the atmosphere transmittance; vertical noise is
+    // sampled by height fraction inside the deck, so it needs no world Y origin.
+    public float4   cloudParams1;
 };
 
 // 32-byte hot area-light record. Linear ACEScg radiance uses packed R11G11B10; the

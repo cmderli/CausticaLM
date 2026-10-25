@@ -166,5 +166,17 @@
 
 	"caustica.options.rt.debugView.11": "Цель автофокуса",
 
-	"caustica.options.rt.debugView.12": "Радиус размытия (измеренный)"
+	"caustica.options.rt.debugView.12": "Радиус размытия (измеренный)",
+
+	"caustica.options.rt.cloudDensity": "Плотность облаков",
+
+	"caustica.options.rt.cloudDensity.tooltip": "Множитель плотности объёмного облачного слоя. Меньшие значения делают те же формы тоньше и прозрачнее, позволяя свету проникать глубже и подчёркивая толщу слоя; большие значения делают облака плотнее и непрозрачнее.",
+
+	"caustica.options.rt.frameGeneration": "Генерация кадров DLSS",
+
+	"caustica.options.rt.frameGeneration.tooltip": "Создаёт один интерполированный кадр между отрендеренными кадрами для вывода в 2x. Требуется поддерживаемая видеокарта NVIDIA и драйвер.",
+
+	"caustica.options.rt.volumetricClouds": "Объёмные облака",
+
+	"caustica.options.rt.volumetricClouds.tooltip": "Рисует объёмный облачный слой и его тени. При выключении исчезают облачный слой, временной проход и тени облаков на прямом солнечном свете."
 }

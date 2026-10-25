@@ -166,5 +166,17 @@
 
 	"caustica.options.rt.debugView.11": "Cible de l’autofocus",
 
-	"caustica.options.rt.debugView.12": "Rayon de flou (mesuré)"
+	"caustica.options.rt.debugView.12": "Rayon de flou (mesuré)",
+
+	"caustica.options.rt.cloudDensity": "Densité des nuages",
+
+	"caustica.options.rt.cloudDensity.tooltip": "Multiplicateur de densité de la couche de nuages volumétriques. Des valeurs plus faibles rendent les mêmes formes plus fines et plus translucides, laissant la lumière pénétrer plus profondément et révélant l'épaisseur de la couche ; des valeurs plus élevées rendent les nuages plus denses et opaques.",
+
+	"caustica.options.rt.frameGeneration": "Génération de trames DLSS",
+
+	"caustica.options.rt.frameGeneration.tooltip": "Génère une image interpolée entre les images rendues pour une sortie 2x. Nécessite un GPU NVIDIA compatible et un pilote adapté.",
+
+	"caustica.options.rt.volumetricClouds": "Nuages volumétriques",
+
+	"caustica.options.rt.volumetricClouds.tooltip": "Dessine la couche de nuages volumétriques et ses ombres. La désactivation supprime la couche de nuages, sa passe temporelle et les ombres des nuages sur la lumière directe du soleil."
 }

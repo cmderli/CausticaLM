@@ -3,6 +3,7 @@ package dev.comfyfluffy.caustica.rt;
 import com.mojang.blaze3d.vulkan.VulkanCommandEncoder;
 import com.mojang.blaze3d.vulkan.VulkanDevice;
 
+import dev.comfyfluffy.caustica.CausticaConfig;
 import dev.comfyfluffy.caustica.CausticaMod;
 import dev.comfyfluffy.caustica.rt.accel.RtImage;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssFg;
@@ -17,12 +18,16 @@ import org.lwjgl.vulkan.KHRSynchronization2;
 import org.lwjgl.vulkan.VK10;
 import org.lwjgl.vulkan.VkCommandBuffer;
 import org.lwjgl.vulkan.VkDependencyInfo;
+import org.lwjgl.vulkan.VkDevice;
 import org.lwjgl.vulkan.VkImageBlit;
 import org.lwjgl.vulkan.VkImageMemoryBarrier2;
 import org.lwjgl.vulkan.VkMemoryBarrier2;
+import org.lwjgl.vulkan.VkPresentIdKHR;
 import org.lwjgl.vulkan.VkPresentInfoKHR;
 import org.lwjgl.vulkan.VkQueue;
 import org.lwjgl.vulkan.VkSemaphoreCreateInfo;
+
+import java.util.ArrayDeque;
 
 import java.nio.IntBuffer;
 import java.nio.LongBuffer;
@@ -42,7 +47,7 @@ import java.nio.LongBuffer;
  * <p>The generated frame is {@link RtDlssFg}'s real DLSSG-interpolated output (via
  * {@link RtComposite#fgInterpolate}); when there's simply no captured RT frame this tick (menu/loading/
  * transition — routine) it falls back to duplicating the real frame for just that one frame (see
- * {@code interpFallbackDuplicate} in the present-rate log), but a genuine FG failure is fatal (see that
+ * {@code interpSkipped} in the present-rate log), but a genuine FG failure is fatal (see that
  * method's docs) rather than silently duplicating forever. Called from both present paths — the normal SDR
  * {@code blitFromTexture} TAIL, and (via {@code hdrBackbuffer=true}) explicitly from inside the HDR present
  * hook, since the HDR/PQ path cancels {@code blitFromTexture} at HEAD and never reaches the TAIL inject.
@@ -64,13 +69,24 @@ public final class RtFramePresenter {
     private long[] pendingPresentSem = new long[0];
     private int pendingCount;
 
+    private final Object presentLock = new Object();
+    private final Object paceLock = new Object();
+    private final ArrayDeque<PendingRealPresent> pendingRealPresents = new ArrayDeque<>();
+    private Thread pacerThread;
+    private boolean pacerRunning;
+    private boolean paceLogged;
+    private long lastGeneratedPresentNs;
+    private long smoothedFrameNs;
+    private boolean generatedPresentedThisFrame;
+    private boolean presentingReal;
+
     // Present-rate diagnostics: real vs generated vkQueuePresentKHR calls per second, independent of MC's own
     // fps counter (which only counts rendered/simulated frames, not our extra presents).
     private long logWindowStartNs;
     private int realFramesInWindow;
     private int generatedFramesInWindow;
     private int interpOkInWindow;
-    private int interpFallbackInWindow;
+    private int interpSkippedInWindow;
 
     private RtFramePresenter() {
     }
@@ -85,9 +101,10 @@ public final class RtFramePresenter {
      * Acquire {@code generatedCount} extra swapchain images and record a Y-flipped blit of {@code srcImage}
      * (the final rendered frame, GENERAL layout) into each, using Minecraft's command encoder {@code enc} so
      * the work rides MC's next {@code submit()}. The presents happen later in {@link #flushPendingPresents}.
-     * Blits DLSSG's real interpolated output per generated frame, or a duplicate of the real frame when RT
-     * simply isn't producing frames this tick (routine). A genuine DLSSG failure latches FG off for the
-     * session — see {@link RtComposite#fgInterpolate}.
+     * Only real DLSSG-interpolated frames are presented: when RT has no captured frame this tick (menu,
+     * loading, transition) the generated present is skipped rather than duplicating the real image, because a
+     * duplicate still costs an acquire, a blit, a queue present and a swapchain image for no new content. A
+     * genuine DLSSG failure latches FG off for the session — see {@link RtComposite#fgInterpolate}.
      *
      * @param hdrBackbuffer whether {@code backbufferView}/{@code srcImage} is the PQ HDR backbuffer
      *     ({@link RtComposite#hdrBackbufferView()}, already UI-composited) rather than the SDR main target —
@@ -97,6 +114,7 @@ public final class RtFramePresenter {
             LongList swapchainImages, long[] presentSemaphores, int swapW, int swapH,
             long backbufferView, long srcImage, int srcW, int srcH, int generatedCount, boolean hdrBackbuffer) {
         pendingCount = 0;
+        generatedPresentedThisFrame = false;
         if (failed || swapchain == 0L || srcImage == 0L || generatedCount <= 0) {
             return;
         }
@@ -108,14 +126,14 @@ public final class RtFramePresenter {
                 // throws, caught below, which disables FG for the session.
                 RtImage interp = RtComposite.INSTANCE.fgInterpolate(enc, backbufferView, srcImage,
                         swapW, swapH, i + 1, generatedCount, hdrBackbuffer);
-                if (interp != null) {
-                    interpOkInWindow++;
-                } else {
-                    interpFallbackInWindow++;
+                if (interp == null) {
+                    interpSkippedInWindow++;
+                    continue; // no captured RT frame this tick: skip the extra present entirely
                 }
-                long blitSrc = interp != null ? interp.image : srcImage;
-                int copyW = Math.min(swapW, interp != null ? interp.width : srcW);
-                int copyH = Math.min(swapH, interp != null ? interp.height : srcH);
+                interpOkInWindow++;
+                long blitSrc = interp.image;
+                int copyW = Math.min(swapW, interp.width);
+                int copyH = Math.min(swapH, interp.height);
 
                 long acquireSem = acquireSemaphores[acquireCursor];
                 acquireCursor = (acquireCursor + 1) % acquireSemaphores.length;
@@ -159,7 +177,9 @@ public final class RtFramePresenter {
                     present.swapchainCount(1);
                     present.pSwapchains(stack.longs(swapchain));
                     present.pImageIndices(stack.ints(pendingImageIndex[i]));
-                    KHRSwapchain.vkQueuePresentKHR(presentQueue, present);
+                    synchronized (presentLock) {
+                        KHRSwapchain.vkQueuePresentKHR(presentQueue, present);
+                    }
                     presentedThisFrame++;
                 }
             } catch (Throwable t) {
@@ -169,8 +189,179 @@ public final class RtFramePresenter {
                 pendingCount = 0;
             }
         }
+        if (presentedThisFrame > 0) {
+            long now = System.nanoTime();
+            if (lastGeneratedPresentNs != 0L) {
+                long interval = now - lastGeneratedPresentNs;
+                if (interval > 0L && interval < 200_000_000L) {
+                    smoothedFrameNs = smoothedFrameNs == 0L ? interval
+                            : (smoothedFrameNs * 7L + interval) / 8L;
+                }
+            }
+            lastGeneratedPresentNs = now;
+            generatedPresentedThisFrame = true;
+        }
         if (RtDlssFg.enabled()) {
             logPresentRate(presentedThisFrame);
+        }
+    }
+
+    /**
+     * True when a real present should be delayed to the midpoint between rendered frames. Requires paced
+     * presents to be enabled, a generated frame to have actually been presented this frame, and a measured
+     * frame interval to derive the midpoint from.
+     */
+    public boolean shouldPaceRealPresent() {
+        return !failed && RtDlssFg.enabled()
+                && CausticaConfig.Rt.Fg.PACED_PRESENTS.value()
+                && generatedPresentedThisFrame && smoothedFrameNs >= 4_000_000L;
+    }
+
+    /**
+     * Queue the real frame's present for the midpoint between two rendered frames. The caller has already
+     * emitted the Reflex PRESENT_START marker; this method owns the actual present and PRESENT_END. Returns
+     * false when the present should happen immediately instead (no interval yet, unsupported shape, or a
+     * failure starting the pacer).
+     */
+    public boolean deferRealPresent(VkQueue queue, VkDevice device, long swapchain, int imageIndex,
+                                    long waitSemaphore, long presentId) {
+        if (!shouldPaceRealPresent() || queue == null || device == null) {
+            return false;
+        }
+        long delay = Math.clamp(smoothedFrameNs / 2L, 1_000_000L, 8_000_000L);
+        if (!ensurePacer()) {
+            return false;
+        }
+        long due = System.nanoTime() + delay;
+        synchronized (paceLock) {
+            pendingRealPresents.add(new PendingRealPresent(queue, device, swapchain, imageIndex,
+                    waitSemaphore, presentId, due));
+            paceLock.notifyAll();
+        }
+        if (!paceLogged) {
+            paceLogged = true;
+            CausticaMod.LOGGER.info("DLSS-FG: paced real presents enabled (half-frame delay {} us)",
+                    delay / 1_000L);
+        }
+        return true;
+    }
+
+    /** Present through the same queue lock the pacer uses; callers own any Reflex markers. */
+    public int presentNow(VkQueue queue, VkPresentInfoKHR present) {
+        synchronized (presentLock) {
+            return KHRSwapchain.vkQueuePresentKHR(queue, present);
+        }
+    }
+
+    /** Present a previously deferred real frame, including its Reflex PRESENT_END marker. */
+    private void presentRealNow(PendingRealPresent pending) {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VkPresentInfoKHR present = VkPresentInfoKHR.calloc(stack).sType$Default();
+            if (pending.waitSemaphore != 0L) {
+                present.pWaitSemaphores(stack.longs(pending.waitSemaphore));
+            }
+            present.swapchainCount(1);
+            present.pSwapchains(stack.longs(pending.swapchain));
+            present.pImageIndices(stack.ints(pending.imageIndex));
+            if (pending.presentId != 0L && RtDeviceBringup.presentIdEnabled()) {
+                VkPresentIdKHR presentId = VkPresentIdKHR.calloc(stack).sType$Default()
+                        .swapchainCount(1).pPresentIds(stack.longs(pending.presentId));
+                present.pNext(presentId.address());
+            }
+            int result;
+            synchronized (presentLock) {
+                result = KHRSwapchain.vkQueuePresentKHR(pending.queue, present);
+            }
+            synchronized (paceLock) {
+                presentingReal = false;
+                paceLock.notifyAll();
+            }
+            if (result != VK10.VK_SUCCESS) {
+                CausticaMod.LOGGER.warn("DLSS-FG: paced real present returned {}", result);
+            }
+            if (pending.presentId != 0L) {
+                RtReflex.INSTANCE.marker(pending.device, pending.swapchain, RtReflex.MARKER_PRESENT_END,
+                        pending.presentId);
+            }
+        } catch (Throwable t) {
+            failed = true;
+            synchronized (paceLock) {
+                presentingReal = false;
+                paceLock.notifyAll();
+            }
+            CausticaMod.LOGGER.error("DLSS-FG: paced real present failed", t);
+        }
+    }
+
+    private boolean ensurePacer() {
+        synchronized (paceLock) {
+            if (pacerRunning) {
+                return true;
+            }
+            try {
+                pacerRunning = true;
+                pacerThread = new Thread(this::pacerLoop, "Caustica-FG-Pacer");
+                pacerThread.setDaemon(true);
+                pacerThread.start();
+                paceLogged = false;
+                return true;
+            } catch (Throwable t) {
+                pacerRunning = false;
+                CausticaMod.LOGGER.error("DLSS-FG: could not start present pacer", t);
+                return false;
+            }
+        }
+    }
+
+    private void pacerLoop() {
+        while (true) {
+            PendingRealPresent pending;
+            synchronized (paceLock) {
+                while (true) {
+                    if (!pacerRunning && pendingRealPresents.isEmpty()) {
+                        return;
+                    }
+                    if (pendingRealPresents.isEmpty()) {
+                        try {
+                            paceLock.wait(100L);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            return;
+                        }
+                        continue;
+                    }
+                    pending = pendingRealPresents.peek();
+                    long waitNs = pending.dueNs - System.nanoTime();
+                    if (waitNs > 0L) {
+                        try {
+                            paceLock.wait(waitNs / 1_000_000L, (int) (waitNs % 1_000_000L));
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            return;
+                        }
+                        continue;
+                    }
+                    pendingRealPresents.remove();
+                    presentingReal = true;
+                    break;
+                }
+            }
+            presentRealNow(pending);
+        }
+    }
+
+    /** Present any queued real frames now; used before swapchain recreation and shutdown. */
+    public void drainPacing() {
+        synchronized (paceLock) {
+            long deadline = System.nanoTime() + 1_000_000_000L;
+            while ((!pendingRealPresents.isEmpty() || presentingReal) && System.nanoTime() < deadline) {
+                try {
+                    paceLock.wait(10L);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
         }
     }
 
@@ -197,15 +388,15 @@ public final class RtFramePresenter {
         double totalFps = (realFramesInWindow + generatedFramesInWindow) / seconds;
         CausticaMod.LOGGER.info(
                 "[FG present-rate] real={} gen={} realFps={} totalPresentFps={} configuredMultiFrameCount={} "
-                        + "interpOk={} interpFallbackDuplicate={}",
+                        + "interpOk={} interpSkipped={}",
                 realFramesInWindow, generatedFramesInWindow,
                 String.format("%.1f", realFps), String.format("%.1f", totalFps),
-                RtDlssFg.INSTANCE.effectiveMultiFrameCount(), interpOkInWindow, interpFallbackInWindow);
+                RtDlssFg.INSTANCE.effectiveMultiFrameCount(), interpOkInWindow, interpSkippedInWindow);
         logWindowStartNs = now;
         realFramesInWindow = 0;
         generatedFramesInWindow = 0;
         interpOkInWindow = 0;
-        interpFallbackInWindow = 0;
+        interpSkippedInWindow = 0;
     }
 
     private void recordBlit(VulkanCommandEncoder enc, long srcImage, long dstImage, int copyW, int copyH,
@@ -218,8 +409,8 @@ public final class RtFramePresenter {
                     .oldLayout(VK10.VK_IMAGE_LAYOUT_UNDEFINED).newLayout(VK10.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
                     .srcQueueFamilyIndex(-1).dstQueueFamilyIndex(-1).image(dstImage);
             toDst.get(0).subresourceRange().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT).baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1);
-            // Make the source's prior writes visible to the blit read — the world render (duplicate path) or
-            // the DLSSG evaluate that wrote the interp image earlier in this same submit (interp path).
+            // Make the source's prior writes visible to the blit read: the DLSSG evaluate that wrote the
+            // interp image earlier in this same submit.
             VkMemoryBarrier2.Buffer srcVis = VkMemoryBarrier2.calloc(1, stack).sType$Default();
             srcVis.get(0).srcStageMask(65536L).srcAccessMask(65536L).dstStageMask(4096L).dstAccessMask(2048L);
             VkDependencyInfo dep1 = VkDependencyInfo.calloc(stack).sType$Default().pImageMemoryBarriers(toDst).pMemoryBarriers(srcVis);
@@ -281,7 +472,28 @@ public final class RtFramePresenter {
     }
 
     /** Destroy the acquire-semaphore pool (device teardown). */
+    private record PendingRealPresent(VkQueue queue, VkDevice device, long swapchain, int imageIndex,
+                                      long waitSemaphore, long presentId, long dueNs) {
+    }
+
     public void destroy(VulkanDevice device) {
+        drainPacing();
+        synchronized (paceLock) {
+            pacerRunning = false;
+            paceLock.notifyAll();
+        }
+        if (pacerThread != null) {
+            try {
+                pacerThread.join(500L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            pacerThread = null;
+        }
+        synchronized (paceLock) {
+            presentingReal = false;
+            pendingRealPresents.clear();
+        }
         for (long sem : acquireSemaphores) {
             if (sem != 0L) {
                 VK10.vkDestroySemaphore(device.vkDevice(), sem, null);

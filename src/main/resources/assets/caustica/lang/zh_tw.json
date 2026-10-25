@@ -166,5 +166,17 @@
 
 	"caustica.options.rt.debugView.11": "自動對焦目標",
 
-	"caustica.options.rt.debugView.12": "虛化半徑（實測）"
+	"caustica.options.rt.debugView.12": "虛化半徑（實測）",
+
+	"caustica.options.rt.cloudDensity": "雲密度",
+
+	"caustica.options.rt.cloudDensity.tooltip": "體積雲層密度的倍率。數值越低，相同雲形越薄、越通透，光線能深入雲層，體積感更明顯；數值越高，雲層越密實、越不透明。",
+
+	"caustica.options.rt.frameGeneration": "DLSS 幀生成",
+
+	"caustica.options.rt.frameGeneration.tooltip": "在渲染幀之間生成一幀插值幀，實現 2x 輸出。需要支援的 NVIDIA 顯示卡與驅動程式。",
+
+	"caustica.options.rt.volumetricClouds": "體積雲",
+
+	"caustica.options.rt.volumetricClouds.tooltip": "繪製體積雲層及其陰影。關閉後會移除雲層、時域處理以及直射陽光下的雲影。"
 }

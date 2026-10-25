@@ -166,5 +166,17 @@
 
 	"caustica.options.rt.debugView.11": "Objetivo del autofoco",
 
-	"caustica.options.rt.debugView.12": "Radio de desenfoque (medido)"
+	"caustica.options.rt.debugView.12": "Radio de desenfoque (medido)",
+
+	"caustica.options.rt.cloudDensity": "Densidad de nubes",
+
+	"caustica.options.rt.cloudDensity.tooltip": "Multiplicador de la densidad de la capa de nubes volumétricas. Los valores bajos hacen que las mismas formas sean más finas y translúcidas, permitiendo que la luz penetre más y se aprecie el grosor de la capa; los valores altos cierran las nubes en una capa más densa y opaca.",
+
+	"caustica.options.rt.frameGeneration": "Generación de fotogramas DLSS",
+
+	"caustica.options.rt.frameGeneration.tooltip": "Genera un fotograma interpolado entre los fotogramas renderizados para una salida 2x. Requiere una GPU NVIDIA compatible y un controlador adecuado.",
+
+	"caustica.options.rt.volumetricClouds": "Nubes volumétricas",
+
+	"caustica.options.rt.volumetricClouds.tooltip": "Dibuja la capa de nubes volumétricas y sus sombras. Al desactivarlo se eliminan la capa de nubes, su pase temporal y las sombras de las nubes sobre la luz solar directa."
 }

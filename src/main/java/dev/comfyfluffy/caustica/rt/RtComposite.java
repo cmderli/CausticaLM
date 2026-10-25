@@ -51,6 +51,9 @@ import org.lwjgl.vulkan.VkSamplerCreateInfo;
 import dev.comfyfluffy.caustica.rt.accel.RtAccel;
 import dev.comfyfluffy.caustica.rt.accel.RtBuffer;
 import dev.comfyfluffy.caustica.rt.accel.RtImage;
+import dev.comfyfluffy.caustica.rt.clouds.RtCloudNoise;
+import dev.comfyfluffy.caustica.rt.clouds.RtCloudShadow;
+import dev.comfyfluffy.caustica.rt.clouds.RtCloudTemporal;
 import dev.comfyfluffy.caustica.rt.entity.RtEntities;
 import dev.comfyfluffy.caustica.rt.entity.RtEntityTextures;
 import dev.comfyfluffy.caustica.rt.material.RtBlockMaterials;
@@ -373,6 +376,10 @@ public final class RtComposite {
     }
 
     private static final int WATER_ANCHOR_MASK = 4095;
+    // Every cloud noise field's tile divides this world period (shape 1024, detail 128, weather 4096), so
+    // one anchor keeps them all world-locked. Reducing it to this range also keeps shader float
+    // precision while a distant world coordinate moves through the field.
+    private static final double CLOUD_ANCHOR_PERIOD = 4096.0;
 
     // Relative view-distance difference at which a motion blur tap stops contributing. Wide enough that a
     // slanted surface seen through a camera move stays one surface (its streak would otherwise be cut off),
@@ -452,6 +459,20 @@ public final class RtComposite {
     // Atmosphere LUTs (transmittance + multiple scattering + this frame's sky view). Device-lifetime; the
     // two static tables are baked on the first frame that records the pass.
     private RtSkyLut skyLut;
+    // World-locked cloud noise, generated once at world bring-up. Its BDA address is pushed every frame;
+    // a null buffer leaves clouds off rather than making the trace read unmapped memory.
+    private RtCloudNoise cloudNoise;
+    private RtCloudShadow cloudShadow;
+    private RtCloudTemporal cloudTemporal;
+    private RtImage cloudTemporalOutput;
+    private RtImage[] cloudTemporalHistory = new RtImage[0];
+    private int cloudTemporalHistoryIndex;
+    private boolean cloudTemporalHistoryValid;
+    private boolean cloudTemporalConfigured;
+    private double lastCloudAnchorX = Double.NaN;
+    private double lastCloudAnchorZ = Double.NaN;
+    private float cloudWindDeltaX;
+    private float cloudWindDeltaZ;
     private RtDebugPresentPipeline debugPresentPipeline;
     private RtToneLut sdrToneLut;
     private RtToneLut hdrToneLut;
@@ -1006,6 +1027,27 @@ public final class RtComposite {
             if (skyLut == null) {
                 skyLut = RtSkyLut.create(ctx);
             }
+            if (cloudNoise == null) {
+                try {
+                    cloudNoise = RtCloudNoise.create(ctx);
+                } catch (Throwable t) {
+                    CausticaMod.LOGGER.warn("Cloud noise generation failed; volumetric clouds are disabled", t);
+                }
+            }
+            if (cloudNoise != null && cloudShadow == null) {
+                try {
+                    cloudShadow = RtCloudShadow.create(ctx);
+                } catch (Throwable t) {
+                    CausticaMod.LOGGER.warn("Cloud shadow-map creation failed; terrain cloud shadows are disabled", t);
+                }
+            }
+            if (cloudNoise != null && cloudTemporal == null) {
+                try {
+                    cloudTemporal = RtCloudTemporal.create(ctx);
+                } catch (Throwable t) {
+                    CausticaMod.LOGGER.warn("Cloud temporal pipeline creation failed; cloud temporal filtering is disabled", t);
+                }
+            }
             bindlessTextureCapacity = RtEntityTextures.maxTextures();
             worldPipeline = RtPipeline.create(ctx, new String[]{
                             RtDeviceBringup.worldPrimaryRaygenShader(),
@@ -1152,6 +1194,20 @@ public final class RtComposite {
         worldPipeline.setExtraStorageImage(7, gSpecRadianceHitDist.view);
     }
 
+    private void destroyCloudTemporalImages() {
+        if (cloudTemporalOutput != null) {
+            cloudTemporalOutput.destroy();
+            cloudTemporalOutput = null;
+        }
+        for (RtImage history : cloudTemporalHistory) {
+            history.destroy();
+        }
+        cloudTemporalHistory = new RtImage[0];
+        cloudTemporalHistoryValid = false;
+        cloudTemporalConfigured = false;
+        cloudTemporalHistoryIndex = 0;
+    }
+
     private void destroyGuideImages() {
         if (gNormal != null) {
             gNormal.destroy();
@@ -1225,6 +1281,7 @@ public final class RtComposite {
         }
         boundSceneSource = 0;
         destroyBloomLevels();
+        destroyCloudTemporalImages();
         if (output != null) {
             output.destroy();
         }
@@ -1279,6 +1336,18 @@ public final class RtComposite {
         gAlbedo = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide diffuse albedo " + renderW + "x" + renderH);
         gDepth = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R32_SFLOAT, "guide reversed-z depth " + renderW + "x" + renderH);
         gMotion = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide motion " + renderW + "x" + renderH);
+        cloudTemporalOutput = ctx.createStorageImage(renderW, renderH,
+                VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                "cloud temporal output " + renderW + "x" + renderH);
+        cloudTemporalHistory = new RtImage[] {
+            ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                    "cloud temporal history a " + renderW + "x" + renderH),
+            ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                    "cloud temporal history b " + renderW + "x" + renderH),
+        };
+        cloudTemporalHistoryIndex = 0;
+        cloudTemporalHistoryValid = false;
+        cloudTemporalConfigured = false;
         gSpecAlbedo = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide specular albedo " + renderW + "x" + renderH);
         gSpecMotion = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide specular motion " + renderW + "x" + renderH);
         gDiffRadianceHitDist = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide diffuse radiance hit distance " + renderW + "x" + renderH);
@@ -1457,6 +1526,45 @@ public final class RtComposite {
             Float4 waterAnchor = new Float4(terrain.blockX & WATER_ANCHOR_MASK,
                     terrain.blockZ & WATER_ANCHOR_MASK, priorWaterWaveTime, 0f);
 
+            // Volumetric clouds: one deck above sea level, wind-advected but world-locked. The anchor is
+            // the terrain rebase origin plus the drift reduced mod the noise period, so the field stays
+            // put as the rebase moves the traced origin and the shader coordinates stay small. A step
+            // count of zero is how the shaders are told the feature is off without another flag lane.
+            int seaLevel = level != null ? level.getSeaLevel() : 0;
+            double cloudSeconds = System.nanoTime() / 1.0e9;
+            double cloudDrift = cloudSeconds * CausticaConfig.Rt.Clouds.WIND_SPEED.value();
+            double cloudAnchorX = ((terrain.blockX + cloudDrift) % CLOUD_ANCHOR_PERIOD + CLOUD_ANCHOR_PERIOD)
+                    % CLOUD_ANCHOR_PERIOD;
+            double cloudAnchorZ = ((terrain.blockZ + cloudDrift * 0.6) % CLOUD_ANCHOR_PERIOD
+                    + CLOUD_ANCHOR_PERIOD) % CLOUD_ANCHOR_PERIOD;
+            boolean cloudsOn = CausticaConfig.Rt.Clouds.ENABLED.value() && cloudNoise != null;
+            cloudWindDeltaX = 0.0f;
+            cloudWindDeltaZ = 0.0f;
+            if (cloudsOn && !Double.isNaN(lastCloudAnchorX)) {
+                cloudWindDeltaX = (float) (cloudAnchorX - lastCloudAnchorX);
+                cloudWindDeltaZ = (float) (cloudAnchorZ - lastCloudAnchorZ);
+                // The anchor wraps on its 4096-block period; a wrapped delta is not a wind displacement.
+                if (Math.abs(cloudWindDeltaX) > 1024.0f || Math.abs(cloudWindDeltaZ) > 1024.0f) {
+                    cloudWindDeltaX = 0.0f;
+                    cloudWindDeltaZ = 0.0f;
+                }
+            }
+            lastCloudAnchorX = cloudsOn ? cloudAnchorX : Double.NaN;
+            lastCloudAnchorZ = cloudsOn ? cloudAnchorZ : Double.NaN;
+            // Trace-space Y is rebased by the terrain origin just like X and Z. Both altitudes are
+            // published relative to that origin so the shader can compare them with ray positions; the
+            // difference between them stays the true altitude above sea level.
+            float cloudBaseY = seaLevel + CausticaConfig.Rt.Clouds.BASE_ALTITUDE.value()
+                    - terrain.blockY;
+            Float4 cloudParams0 = new Float4(
+                    cloudBaseY,
+                    CausticaConfig.Rt.Clouds.THICKNESS.value(),
+                    CausticaConfig.Rt.Clouds.COVERAGE.value(),
+                    CausticaConfig.Rt.Clouds.DENSITY.value());
+            Float4 cloudParams1 = new Float4((float) cloudAnchorX, (float) cloudAnchorZ,
+                    cloudsOn ? CausticaConfig.Rt.Clouds.STEPS.value() : 0.0f,
+                    (float) (seaLevel - terrain.blockY));
+
             // Rebuild the TLAS this frame from static section instances merged with dynamic entity
             // instances, bind it into the pipeline's descriptor ring, record the build, then barrier so
             // the trace sees the finished TLAS. Section BLASes are already built (async, by RtTerrain);
@@ -1528,7 +1636,9 @@ public final class RtComposite {
                     // gather pass supplies the remainder of the camera's aperture from the reconstructed image,
                     // and dofParams carries the full radius it needs for that.
                     CausticaConfig.Rt.Camera.depthOfField()
-                            ? optics.defocusScaleBlocks() * tracedDiscFraction(optics) : 0.0f
+                            ? optics.defocusScaleBlocks() * tracedDiscFraction(optics) : 0.0f,
+                    cloudParams0,
+                    cloudParams1
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
@@ -1564,6 +1674,8 @@ public final class RtComposite {
                     terrain.lightBufferAddress(), terrain.lightAliasBufferAddress(),
                     terrain.lightLocalAliasBufferAddress(), terrain.lightGridCellBufferAddress(),
                     terrain.lightGridSpanBufferAddress(), continuationQueue.deviceAddress,
+                    cloudNoise != null ? cloudNoise.address() : 0L,
+                    cloudShadow != null ? cloudShadow.address() : 0L,
                     (int) frameCounter).write(pushConstants);
             // Sky LUTs, from the same WorldPush slot the trace is about to read: the sky the LUT holds and
             // the sky the frame shades are built from one set of angles, not two. Recorded here (after the
@@ -1572,6 +1684,15 @@ public final class RtComposite {
                 skyLut.record(cmd, pushBuf.deviceAddress);
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // sky LUT writes visible to raygen/miss
+            if (cloudShadow != null && cloudNoise != null
+                    && CausticaConfig.Rt.Clouds.ENABLED.value()) {
+                try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("frame.cloudShadow")) {
+                    cloudShadow.record(cmd, stack, pushBuf.deviceAddress, cloudNoise.address(),
+                            CausticaConfig.Rt.Clouds.THICKNESS.value(),
+                            CausticaConfig.Rt.Clouds.COVERAGE.value(),
+                            CausticaConfig.Rt.Clouds.DENSITY.value(), 2048.0f);
+                }
+            }
 
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "world primary trace");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.tracePrimary")) {
@@ -1583,6 +1704,30 @@ public final class RtComposite {
                 active.trace(cmd, renderW, renderH, pushConstants, 1);
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // RT writes visible to reconstruction reads
+            boolean cloudTemporalEnabled = cloudTemporal != null && cloudTemporalOutput != null
+                    && cloudNoise != null && CausticaConfig.Rt.Clouds.ENABLED.value();
+            if (!cloudTemporalEnabled) {
+                cloudTemporalHistoryValid = false;
+            }
+            boolean cloudTemporalApplied = false;
+            if (cloudTemporalEnabled) {
+                try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("frame.cloudTemporal")) {
+                    if (!cloudTemporalConfigured) {
+                        cloudTemporal.configure(output.view, gDepth.view, gMotion.view,
+                                cloudTemporalHistory[0].view, cloudTemporalHistory[1].view,
+                                cloudTemporalOutput.view);
+                        cloudTemporalConfigured = true;
+                    }
+                    int readIndex = cloudTemporalHistoryIndex;
+                    cloudTemporal.dispatch(cmd, stack, renderW, renderH, cloudTemporalHistoryValid,
+                            readIndex, pushBuf.deviceAddress, cloudNoise.address(),
+                            cloudWindDeltaX, cloudWindDeltaZ);
+                    cloudTemporalHistoryIndex = 1 - readIndex;
+                    cloudTemporalHistoryValid = true;
+                    cloudTemporalApplied = true;
+                }
+            }
+            RtImage sceneForRecon = cloudTemporalApplied ? cloudTemporalOutput : output;
             // Reconstruction: the RT pass wrote noisy color (render res) + guides; the active backend reads
             // them and writes the display-res result straight into rrOutput. Jitter is passed in the ray's
             // own convention (the value applied to the primary ray); translating it to a backend's sign
@@ -1595,7 +1740,7 @@ public final class RtComposite {
                     // reprojection and it cannot be recovered from the view matrices alone.
                     reconWorldPrevToWorld.identity().translation(-mvCamDeltaX, -mvCamDeltaY, -mvCamDeltaZ);
                     RtRecon.INSTANCE.setRadianceLanes(gDiffRadianceHitDist, gSpecRadianceHitDist);
-                    rrDone = RtRecon.INSTANCE.evaluate(cmd, output, gDepth, gMotion, gAlbedo,
+                    rrDone = RtRecon.INSTANCE.evaluate(cmd, sceneForRecon, gDepth, gMotion, gAlbedo,
                             gSpecAlbedo, gNormal, gSpecMotion, rrOutput, renderW, renderH, displayW, displayH,
                             jitterX, jitterY, frameViewRotation, frameProjection, reconWorldPrevToWorld);
                 }
@@ -1609,7 +1754,7 @@ public final class RtComposite {
                 VulkanCommandEncoder.memoryBarrier(cmd, stack);
                 try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "fallback upscale");
                      RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.upscale")) {
-                    blitUpscale(cmd, stack, output, rrOutput);
+                    blitUpscale(cmd, stack, sceneForRecon, rrOutput);
                 }
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // rrOutput + guides visible to everything below
@@ -1996,6 +2141,19 @@ public final class RtComposite {
         if (skyLut != null) {
             skyLut.destroy();
             skyLut = null;
+        }
+        if (cloudTemporal != null) {
+            cloudTemporal.destroy();
+            cloudTemporal = null;
+        }
+        destroyCloudTemporalImages();
+        if (cloudShadow != null) {
+            cloudShadow.destroy();
+            cloudShadow = null;
+        }
+        if (cloudNoise != null) {
+            cloudNoise.destroy();
+            cloudNoise = null;
         }
         if (debugPresentPipeline != null) {
             debugPresentPipeline.destroy();
@@ -2449,14 +2607,14 @@ public final class RtComposite {
      * command encoder, returning the interpolated output image (backbuffer size) for {@link RtFramePresenter}
      * to blit into a generated swapchain image. On {@code index == 1} it ensures the feature (created in its
      * own synchronous submit), the per-index output images, and the jitter-free reprojection matrices.
-     * Returns {@code null} (caller falls back to duplicating the real frame for this one frame, no session
-     * impact) when there's simply no captured RT frame to interpolate from right now — routine and expected
-     * on menu/loading/transition frames, since {@link RtFramePresenter#isActive} only gates on being in a
-     * world, not on RT having actually produced a frame this tick. Throws instead for failures that should
+     * Returns {@code null} (caller skips this generated present for the frame, no session impact) when
+     * there's simply no captured RT frame to interpolate from right now — routine and expected on
+     * menu/loading/transition frames, since {@link RtFramePresenter#isActive} only gates on being in a world,
+     * not on RT having actually produced a frame this tick. Throws instead for failures that should
      * never happen once RT is actively producing frames (DLSSG feature creation failing, an out-of-range
      * index, the evaluate itself failing) — the caller treats those as fatal and disables FG for the
-     * session, same as any other FG present-record failure, rather than silently degrading to duplicated
-     * (non-interpolated) frames forever with no visible sign anything is wrong. Rotation-only matrices;
+     * session, same as any other FG present-record failure, rather than silently skipping generated frames
+     * forever with no visible sign anything is wrong. Rotation-only matrices;
      * camera translation is carried by the mvecs (cameraMotionIncluded).
      *
      * <p>{@code hdrBackbuffer} selects the HDR path. Per the DLSS-FG programming guide's HDR section, scRGB is

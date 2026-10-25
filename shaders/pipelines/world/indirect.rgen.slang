@@ -30,10 +30,16 @@ import trace_ser;
 #endif
 import lighting;
 import sky;
+import clouds;
 import bindings;
 
 // Atmospheric transmittance LUT (RtSkyLut), also bound to world.rmiss at the same binding: raygen reads it
 // to colour the NEE sun/moonlight, the miss shader reads it to tint the visible discs and stars.
+
+// This dispatch's cloud layer, derived once beside the celestial light so every shaded vertex tests its
+// sun/moon visibility against the same density field world.rmiss draws. Only the shadow query is read
+// here; the layer's radiance reaches the path through the miss shader.
+public static CloudState cloudFrame = {};
 
 // Reported as a lane's hit distance when the ray escaped to sky. The renderer works in blocks and the
 // scene is bounded far below this, so it reads as "no hit" without being a special case downstream.
@@ -335,6 +341,7 @@ public PathRadiance tracePath(PathSegment seg, uint2 pix, uint sampleIndex, int 
             if (ndl > 0.0) {
                 float3 shadowOrigin = hitPos + (signedNdl >= 0.0 ? n : -n) * SURF_BIAS;
                 float3 vis = visibility(shadowOrigin, lightDir, 10000.0).transmittance;
+                vis *= cloudShadowTransmittance(shadowOrigin, lightDir, cloudFrame);
                 if (max(vis.r, max(vis.g, vis.b)) > 0.0) {
                     float3 billboard = throughput * albedo * INV_PI * celestialLight.illuminance * ndl * vis;
                     Ldiff += billboard;
@@ -432,6 +439,9 @@ public PathRadiance tracePath(PathSegment seg, uint2 pix, uint sampleIndex, int 
         if (ndl > 0.0) {
             VisibilityResult shadow = visibility(p, lightDir, 10000.0);
             float3 vis = shadow.transmittance;
+            // The shadow ray only proves terrain is clear; the cloud deck it passes through attenuates
+            // the same light. Shading and the drawn cloud therefore share one density field.
+            vis *= cloudShadowTransmittance(p, lightDir, cloudFrame);
             // Underwater receiver whose shadow ray crossed a water surface: scale the direct light by
             // the wave-refraction caustic at the exit point. Focusing scales the incident irradiance,
             // so it applies to the whole NEE term (diffuse + specular).
@@ -499,6 +509,7 @@ public PathRadiance tracePath(PathSegment seg, uint2 pix, uint sampleIndex, int 
             if (backNdl > 0.0) {
                 VisibilityResult shadowBack = visibility(hitPos - n * SURF_BIAS, lightDir, 10000.0);
                 float3 visB = shadowBack.transmittance;
+                visB *= cloudShadowTransmittance(hitPos - n * SURF_BIAS, lightDir, cloudFrame);
                 // Same caustic as the front-face NEE — underwater kelp/seagrass transmission should
                 // flicker with the same light bands as the floor around it.
                 if (medium.current.water && waterWaves && shadowBack.waterHitT > 0.0) {
@@ -599,9 +610,11 @@ void main() {
     worldPush = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
     // Derive this dispatch's directional light once. The same transmittance LUT drives terrain lighting
     // and the visible sun/moon, keeping atmospheric tint consistent across both consumers.
-    celestialLight = dominantCelestialLight(skyState(worldPush), transmittanceLut);
+    SkyState sky = skyState(worldPush);
+    celestialLight = dominantCelestialLight(sky, transmittanceLut);
     // The path integral is ACEScg end to end; sky.slang works in linear BT.709, so this is the one seam.
     celestialLight.illuminance = bt709ToAcesCg(celestialLight.illuminance);
+    cloudFrame = cloudState(worldPush, sky);
     uint2 dispatchIndex = DispatchRaysIndex().xy;
     uint2 dimensions = DispatchRaysDimensions().xy;
     int2 pix = int2(dispatchIndex);

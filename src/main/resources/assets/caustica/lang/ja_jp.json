@@ -166,5 +166,17 @@
 
 	"caustica.options.rt.debugView.11": "オートフォーカス対象",
 
-	"caustica.options.rt.debugView.12": "ぼけ半径（実測）"
+	"caustica.options.rt.debugView.12": "ぼけ半径（実測）",
+
+	"caustica.options.rt.cloudDensity": "雲の密度",
+
+	"caustica.options.rt.cloudDensity.tooltip": "ボリュメトリック雲層の密度の倍率。値を下げると同じ雲形状が薄く透明になり、光が深くまで届いて層の厚みが見えやすくなります。値を上げると雲が密で不透明になります。",
+
+	"caustica.options.rt.frameGeneration": "DLSS フレーム生成",
+
+	"caustica.options.rt.frameGeneration.tooltip": "レンダリングフレームの間に補間フレームを1枚生成し、2倍の出力にします。対応する NVIDIA GPU とドライバーが必要です。",
+
+	"caustica.options.rt.volumetricClouds": "ボリュメトリック雲",
+
+	"caustica.options.rt.volumetricClouds.tooltip": "ボリュメトリック雲層とその影を描画します。オフにすると雲層、テンポラルパス、直射日光への雲の影がなくなります。"
 }

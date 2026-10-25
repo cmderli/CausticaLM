@@ -483,6 +483,9 @@ tasks.named("jar", Jar).configure {
 	from(rootProject.files("LICENSE.md", "COPYING", "COPYING.LESSER", "THIRD_PARTY_NOTICES.md")) {
 		into "META-INF"
 	}
+	from(rootProject.fileTree("licenses")) {
+		into "META-INF/licenses"
+	}
 }
 
 publishing {

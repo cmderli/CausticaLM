@@ -473,8 +473,15 @@ public final class RtDeviceBringup {
         return CausticaConfig.Rt.Omm.ENABLED.value();
     }
 
+    /**
+     * Reflex is requested for every RT session, not only while its own setting is on. Device extensions are
+     * fixed at device creation, and both Reflex and Frame Generation can be toggled from Video Settings at
+     * runtime; gating the extension on the startup value would make a later FG toggle silently lose Reflex
+     * until the game was restarted. {@link #reflexEnabled()} still records whether the device actually
+     * provided the extension, and {@code RtReflex.enabled()} is the runtime gate.
+     */
     private static boolean reflexRequested() {
-        return CausticaConfig.Rt.Reflex.ENABLED.value();
+        return true;
     }
 
     /** Query every feature boolean Caustica might enable in one complete Features2 chain. */

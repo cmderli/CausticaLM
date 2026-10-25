@@ -166,5 +166,17 @@
 
 	"caustica.options.rt.debugView.11": "자동 초점 대상",
 
-	"caustica.options.rt.debugView.12": "흐림 반경(실측)"
+	"caustica.options.rt.debugView.12": "흐림 반경(실측)",
+
+	"caustica.options.rt.cloudDensity": "구름 밀도",
+
+	"caustica.options.rt.cloudDensity.tooltip": "볼류메트릭 구름층의 밀도 배율입니다. 값을 낮추면 같은 구름 형태가 더 얇고 투명해져 빛이 더 깊이 침투하고 구름층의 두께가 드러납니다. 값을 높이면 구름이 더 빽빽하고 불투명해집니다.",
+
+	"caustica.options.rt.frameGeneration": "DLSS 프레임 생성",
+
+	"caustica.options.rt.frameGeneration.tooltip": "렌더링된 프레임 사이에 보간 프레임을 하나 생성해 2x 출력을 만듭니다. 지원되는 NVIDIA GPU와 드라이버가 필요합니다.",
+
+	"caustica.options.rt.volumetricClouds": "볼류메트릭 구름",
+
+	"caustica.options.rt.volumetricClouds.tooltip": "볼류메트릭 구름층과 그림자를 그립니다. 끄면 구름층, 시간적 패스, 직사광선에 드리우는 구름 그림자가 제거됩니다."
 }

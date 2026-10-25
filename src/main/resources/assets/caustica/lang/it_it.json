@@ -166,5 +166,17 @@
 
 	"caustica.options.rt.debugView.11": "Punto di messa a fuoco",
 
-	"caustica.options.rt.debugView.12": "Raggio sfocatura (misurato)"
+	"caustica.options.rt.debugView.12": "Raggio sfocatura (misurato)",
+
+	"caustica.options.rt.cloudDensity": "Densità delle nuvole",
+
+	"caustica.options.rt.cloudDensity.tooltip": "Moltiplicatore della densità dello strato di nuvole volumetriche. Valori più bassi rendono le stesse forme più sottili e traslucide, lasciando penetrare la luce e rendendo visibile lo spessore; valori più alti chiudono le nuvole in uno strato più denso e opaco.",
+
+	"caustica.options.rt.frameGeneration": "Generazione frame DLSS",
+
+	"caustica.options.rt.frameGeneration.tooltip": "Genera un frame interpolato tra i frame renderizzati per un output 2x. Richiede una GPU NVIDIA supportata e un driver adeguato.",
+
+	"caustica.options.rt.volumetricClouds": "Nuvole volumetriche",
+
+	"caustica.options.rt.volumetricClouds.tooltip": "Disegna lo strato di nuvole volumetriche e le sue ombre. Disattivandolo si rimuovono lo strato di nuvole, il pass temporale e le ombre delle nuvole sulla luce solare diretta."
 }

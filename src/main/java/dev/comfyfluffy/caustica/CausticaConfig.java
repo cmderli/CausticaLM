@@ -58,9 +58,11 @@ public final class CausticaConfig {
         Object[] touch = {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
+            Rt.Fg.PACED_PRESENTS,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,
             Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Rt.MotionBlur.ENABLED, Ngx.PATH, Fsr.PATH, Nrd.PATH,
             Rt.Reconstruction.DENOISER, Rt.Camera.DEPTH_OF_FIELD_ENABLED,
+            Rt.Clouds.ENABLED, Rt.Clouds.STEPS, Rt.Clouds.DENSITY,
         };
     }
 
@@ -88,8 +90,11 @@ public final class CausticaConfig {
         FILE.setComment("terrain",
                 " Controls terrain loading. Higher limits can load terrain faster but use more CPU and GPU time.");
         FILE.setComment("frame-generation",
-                " DLSS Frame Generation. Requires supported NVIDIA hardware and drivers.\n"
-                        + " multi-frame-count sets generated frames per rendered frame (1 = 2x, 2 = 3x, ...).");
+                " DLSS Frame Generation at 2x: one generated frame between rendered frames.\n"
+                        + " Requires supported NVIDIA hardware and drivers.\n"
+                        + " paced-presents spreads the real frame halfway to the next render instead of\n"
+                        + " submitting generated and real frames back-to-back; disable it to test the raw\n"
+                        + " two-present cadence.");
         FILE.setComment("reflex",
                 " NVIDIA Reflex. Requires supported NVIDIA hardware and drivers.\n"
                         + " minimum-interval-us controls frame limiting; 0 disables the limit.");
@@ -137,6 +142,13 @@ public final class CausticaConfig {
                         + " upscaler is auto, fsr, or bilinear (DLSS Ray Reconstruction upscales by itself).\n"
                         + " quality is the super resolution mode: 0 native-aa, 1 quality, 2 balanced,\n"
                         + " 3 performance, 4 ultra-performance.");
+        FILE.setComment("clouds",
+                " Volumetric cloud deck above sea level, raymarched by every sky ray.\n"
+                        + " steps trades quality for cost: 12 is cheap and soft, 40 resolves the layer edges.\n"
+                        + " density scales the extinction and scattering; lower values make the same deck\n"
+                        + " thinner and more translucent. base-altitude and thickness are in blocks;\n"
+                        + " coverage is the sky fraction the deck covers (0..1). wind-speed is in blocks\n"
+                        + " per second.");
     }
 
     private static Path resolveConfigPath() {
@@ -579,6 +591,45 @@ public final class CausticaConfig {
             }
         }
 
+        /**
+         * Volumetric cloud deck. The layer is part of the path integral: each escaping ray raymarches it,
+         * and the celestial NEE at every shaded vertex is attenuated by the same density field, so a
+         * cloud's shadow and the cloud itself cannot disagree. Steps is the cost knob; the rest shapes the
+         * deck and is read once per frame.
+         */
+        public static final class Clouds {
+            public static final BooleanSetting ENABLED =
+                    bool("caustica.rt.clouds", "clouds.enabled", true);
+            public static final List<Integer> QUALITY_STEPS = List.of(12, 20, 28, 40);
+            public static final IntSetting STEPS =
+                    intChoice("caustica.rt.clouds.steps", "clouds.steps", 28, QUALITY_STEPS);
+            /** Altitude of the deck's base above sea level, in blocks. */
+            public static final IntSetting BASE_ALTITUDE =
+                    clampedInt("caustica.rt.clouds.baseAltitude", "clouds.base-altitude", 180, 20, 600);
+            /**
+             * Deck thickness in blocks. The default is deep enough for the vertical profile and the
+             * three-dimensional noise to show towers rather than reading as a thin sheet.
+             */
+            public static final IntSetting THICKNESS =
+                    clampedInt("caustica.rt.clouds.thickness", "clouds.thickness", 320, 40, 1200);
+            /** Fraction of the sky the deck covers, 0 (clear) to 1 (overcast). */
+            public static final FloatSetting COVERAGE =
+                    clampedFloat("caustica.rt.clouds.coverage", "clouds.coverage", 0.30f, 0.0f, 1.0f);
+            /**
+             * Multiplier on the density field. It scales both extinction and scattering, so lowering it
+             * makes the same cloud shapes optically thinner and lets light penetrate deeper into the
+             * deck. Exposed as the Cloud Density slider.
+             */
+            public static final FloatSetting DENSITY =
+                    clampedFloat("caustica.rt.clouds.density", "clouds.density", 0.3f, 0.05f, 2.0f);
+            /** Wind drift speed in blocks per second. */
+            public static final FloatSetting WIND_SPEED =
+                    clampedFloat("caustica.rt.clouds.windSpeed", "clouds.wind-speed", 6.0f, 0.0f, 64.0f);
+
+            private Clouds() {
+            }
+        }
+
         public static final class Terrain {
             // External keys retain their historical "per-tick" names for config compatibility; terrain
             // streaming is render-pass driven and these Java names reflect the actual scheduling unit.
@@ -756,11 +807,15 @@ public final class CausticaConfig {
             }
         }
 
-        /** DLSS Frame Generation. Default off; gated additionally by hardware/driver availability. */
+        /** DLSS Frame Generation at 2x. Default off; gated additionally by hardware/driver availability. */
         public static final class Fg {
             public static final BooleanSetting ENABLED = bool("caustica.rt.fg", "frame-generation.enabled", false);
-            public static final IntSetting MULTI_FRAME_COUNT =
-                    intAtLeast("caustica.rt.fg.multiFrameCount", "frame-generation.multi-frame-count", 1, 1);
+            /**
+             * Delays the real present to the midpoint between two rendered frames, so the generated and real
+             * presents occupy evenly spaced vblanks. Disabling it restores the old back-to-back cadence.
+             */
+            public static final BooleanSetting PACED_PRESENTS =
+                    bool("caustica.rt.fg.pacedPresents", "frame-generation.paced-presents", true);
 
             private Fg() {
             }

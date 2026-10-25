@@ -57,10 +57,12 @@ public final class RtDlssFg {
         return multiFrameCountMax;
     }
 
-    /** Requested generated-frame count clamped to the driver maximum (>=1 once available). */
+    /**
+     * Generated frames per rendered frame. CausticaLM exposes 2x only: one interpolated frame between two
+     * rendered frames, regardless of the driver's multi-frame capability.
+     */
     public int effectiveMultiFrameCount() {
-        int requested = CausticaConfig.Rt.Fg.MULTI_FRAME_COUNT.value();
-        return multiFrameCountMax > 0 ? Math.clamp(requested, 1, multiFrameCountMax) : requested;
+        return 1;
     }
 
     public boolean isReady() {

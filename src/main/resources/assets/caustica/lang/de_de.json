@@ -166,5 +166,17 @@
 
 	"caustica.options.rt.debugView.11": "Autofokus-Ziel",
 
-	"caustica.options.rt.debugView.12": "Unschärferadius (gemessen)"
+	"caustica.options.rt.debugView.12": "Unschärferadius (gemessen)",
+
+	"caustica.options.rt.cloudDensity": "Wolkendichte",
+
+	"caustica.options.rt.cloudDensity.tooltip": "Multiplikator für die Dichte der volumetrischen Wolkenschicht. Niedrigere Werte machen dieselben Wolkenformen dünner und durchlässiger, sodass Licht tiefer eindringt und die Tiefe der Schicht sichtbar wird; höhere Werte verdichten die Wolken zu einer opakeren Decke.",
+
+	"caustica.options.rt.frameGeneration": "DLSS Frame Generation",
+
+	"caustica.options.rt.frameGeneration.tooltip": "Erzeugt ein interpoliertes Bild zwischen gerenderten Bildern für 2x Ausgabe. Erfordert eine unterstützte NVIDIA-GPU und einen passenden Treiber.",
+
+	"caustica.options.rt.volumetricClouds": "Volumetrische Wolken",
+
+	"caustica.options.rt.volumetricClouds.tooltip": "Zeichnet die volumetrische Wolkenschicht und ihre Schatten. Beim Ausschalten entfallen die Wolkenschicht, ihr Temporal-Pass und die Wolkenschatten auf direktem Sonnenlicht."
 }

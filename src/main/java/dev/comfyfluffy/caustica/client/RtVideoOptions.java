@@ -2,6 +2,7 @@ package dev.comfyfluffy.caustica.client;
 
 import com.mojang.serialization.Codec;
 import dev.comfyfluffy.caustica.CausticaConfig;
+import dev.comfyfluffy.caustica.CausticaMod;
 import dev.comfyfluffy.caustica.CausticaConfig.BooleanSetting;
 import dev.comfyfluffy.caustica.CausticaConfig.FloatSetting;
 import dev.comfyfluffy.caustica.CausticaConfig.IntSetting;
@@ -52,9 +53,12 @@ public final class RtVideoOptions {
             entities(),
             particles(),
             waterWaves(),
+            volumetricClouds(),
+            cloudDensity(),
             denoiser(),
             superResolutionMethod(),
             superResolution(),
+            frameGeneration(),
             depthOfField(),
             depthOfFieldMode(),
             artisticBlur(),
@@ -77,6 +81,26 @@ public final class RtVideoOptions {
         }
         options.add(debugView());
         return options.toArray(OptionInstance<?>[]::new);
+    }
+
+    /**
+     * DLSS Frame Generation at 2x. The driver may support 3x/4x, but CausticaLM's present path and the
+     * exposed option are deliberately limited to one generated frame per rendered frame.
+     */
+    private static OptionInstance<Boolean> frameGeneration() {
+        BooleanSetting setting = CausticaConfig.Rt.Fg.ENABLED;
+        return OptionInstance.createBoolean(
+            "caustica.options.rt.frameGeneration",
+            OptionInstance.cachedConstantTooltip(
+                Component.translatable("caustica.options.rt.frameGeneration.tooltip")),
+            setting.value(),
+            enabled -> {
+                setting.set(enabled);
+                CausticaMod.LOGGER.info("DLSS Frame Generation setting: {} (2x)", enabled ? "on" : "off");
+                // FG requires FIFO, which is a swapchain creation-time mode. Recreate the surface so the
+                // toggle takes effect now rather than at the next resize.
+                Minecraft.getInstance().invalidateSurfaceConfiguration();
+            });
     }
 
     private static OptionInstance<String> exposureMode() {
@@ -152,6 +176,36 @@ public final class RtVideoOptions {
 
     private static OptionInstance<Boolean> waterWaves() {
         return bool("caustica.options.rt.waterWaves", CausticaConfig.Rt.Composite.WATER_WAVES);
+    }
+
+    /** Master switch for the cloud deck, its temporal pass and its shadows. */
+    private static OptionInstance<Boolean> volumetricClouds() {
+        BooleanSetting setting = CausticaConfig.Rt.Clouds.ENABLED;
+        return OptionInstance.createBoolean(
+            "caustica.options.rt.volumetricClouds",
+            OptionInstance.cachedConstantTooltip(
+                Component.translatable("caustica.options.rt.volumetricClouds.tooltip")),
+            setting.value(),
+            setting::set);
+    }
+
+    /**
+     * Multiplier on the cloud deck's density. It scales extinction and scattering together, so lowering
+     * it makes the same cloud shapes optically thinner and lets direct light penetrate deeper into the
+     * layer: the deck reads as volume instead of as one opaque underside. The slider shows the raw
+     * multiplier stored under {@code clouds.density}.
+     */
+    private static OptionInstance<Integer> cloudDensity() {
+        FloatSetting setting = CausticaConfig.Rt.Clouds.DENSITY;
+        return new OptionInstance<>(
+            "caustica.options.rt.cloudDensity",
+            OptionInstance.cachedConstantTooltip(
+                Component.translatable("caustica.options.rt.cloudDensity.tooltip")),
+            (caption, percent) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.2f", percent / 100.0f))),
+            new OptionInstance.IntRange(5, 200),
+            Math.clamp(Math.round(setting.value() * 100.0f), 5, 200),
+            percent -> setting.set(percent / 100.0f));
     }
 
     /**

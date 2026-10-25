@@ -166,5 +166,17 @@
 
 	"caustica.options.rt.debugView.11": "自动对焦目标",
 
-	"caustica.options.rt.debugView.12": "虚化半径（实测）"
+	"caustica.options.rt.debugView.12": "虚化半径（实测）",
+
+	"caustica.options.rt.cloudDensity": "云密度",
+
+	"caustica.options.rt.cloudDensity.tooltip": "体积云层密度的倍率。数值越低，相同云形越薄、越通透，光线能深入云层，体积感更明显；数值越高，云层越密实、越不透明。",
+
+	"caustica.options.rt.frameGeneration": "DLSS 帧生成",
+
+	"caustica.options.rt.frameGeneration.tooltip": "在渲染帧之间生成一帧插值帧，实现 2x 输出。需要支持的 NVIDIA 显卡和驱动。",
+
+	"caustica.options.rt.volumetricClouds": "体积云",
+
+	"caustica.options.rt.volumetricClouds.tooltip": "绘制体积云层及其阴影。关闭后会移除云层、时域处理以及直射阳光下的云影。"
 }

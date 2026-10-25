@@ -67,7 +67,10 @@ public final class RtReflex {
     }
 
     public static boolean enabled() {
-        return CausticaConfig.Rt.Reflex.ENABLED.value() && RtDeviceBringup.reflexEnabled();
+        // Frame Generation relies on Reflex for its present pacing and latency markers, so enabling FG
+        // enables Reflex for the same device even when the standalone Reflex setting is off.
+        return (CausticaConfig.Rt.Reflex.ENABLED.value() || CausticaConfig.Rt.Fg.ENABLED.value())
+                && RtDeviceBringup.reflexEnabled();
     }
 
     /** Current sim frame's marker id (set by the last {@link #sleep} call) — tags SIMULATION/RENDERSUBMIT markers. */

@@ -60,3 +60,24 @@ CausticaLM's `caustica_nrd` shim is project-owned glue code and follows Caustica
 project license unless otherwise noted. Its host-side shader ports
 (`shaders/pipelines/nrd_frontend`, `shaders/pipelines/nrd_backend`) reimplement
 encoding helpers described in NRD's `NRD.hlsli` and carry the same notice.
+
+## NUMOS
+
+The cloud placement map, cumulus turbulence detail, value erosion and multiple-scattering key-light
+model are adapted from NUMOS:
+
+- Project: <https://github.com/Kim2091/numos-sky>
+- Copyright 2026 Kim2091 (Sparkles)
+- License: Apache License 2.0
+
+The ported portions are CausticaLM's `shaders/pipelines/world/clouds.slang` cloud-model functions, the
+placement/detail/SDF generators in `src/main/java/dev/comfyfluffy/caustica/rt/clouds/RtCloudNoise.java`,
+and the body-field/JFA bake structure. They are modified to sample CausticaLM's BDA noise buffer and
+block-scale world coordinates, and the SDF/JFA chain runs on the CPU rather than NUMOS' Vulkan compute
+passes. NUMOS' cascaded horizon shadow maps, secondary-ray cloud LUT and full cloud-only temporal
+filter (sparse lattice, fast/slow history, cloud depth history) are not included; CausticaLM uses a
+simpler render-resolution sky/cloud history pass.
+
+The Apache-2.0 license text is in `licenses/NUMOS-LICENSE.txt`; the upstream NOTICE is reproduced in
+`licenses/NUMOS-NOTICE.txt`. NUMOS' night-sky assets are not used by CausticaLM; their separate
+CC BY-SA 3.0 IGO terms do not apply to the cloud code above.

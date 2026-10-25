@@ -290,6 +290,16 @@ public abstract class VulkanGpuSurfaceMixin {
 	@Unique
 	private int caustica$createSwapchainWithRetry(VkDevice device, VkSwapchainCreateInfoKHR pCreateInfo,
 			VkAllocationCallbacks pAllocator, LongBuffer pSwapchain) {
+		// A paced real present may still reference the old swapchain; finish it before replacing it.
+		RtFramePresenter.INSTANCE.drainPacing();
+		if (dev.comfyfluffy.caustica.rt.pipeline.RtDlssFg.enabled()
+				&& pCreateInfo.presentMode() != 2 /* VK_PRESENT_MODE_FIFO_KHR */) {
+			// FIFO gives every queued present its own vblank. MAILBOX/IMMEDIATE let a later present replace
+			// the generated one before scan-out, so FG pays the inference + present cost without showing
+			// the frame. The UI recreates the surface when the FG toggle changes so this takes effect.
+			CausticaMod.LOGGER.info("DLSS-FG: forcing FIFO present mode (requested {})", pCreateInfo.presentMode());
+			pCreateInfo.presentMode(2 /* VK_PRESENT_MODE_FIFO_KHR */);
+		}
 		int result = KHRSwapchain.vkCreateSwapchainKHR(device, pCreateInfo, pAllocator, pSwapchain);
 		if (result == VK10.VK_SUCCESS || this.caustica$colorSpace == 0) {
 			return result;
@@ -327,9 +337,8 @@ public abstract class VulkanGpuSurfaceMixin {
 		// only mode that guarantees every queued present gets its own vblank. Log once per (re)configure so
 		// this is checkable without guessing at the in-game V-Sync setting.
 		if (dev.comfyfluffy.caustica.rt.pipeline.RtDlssFg.enabled()) {
-			CausticaMod.LOGGER.info("DLSS-FG: swapchain present mode = {} (FIFO required for generated frames "
-					+ "to actually display; MAILBOX/IMMEDIATE will silently drop them — enable V-Sync if not FIFO)",
-					config.presentMode());
+			CausticaMod.LOGGER.info("DLSS-FG: swapchain configured (Minecraft requested present mode {}; "
+					+ "FIFO is forced while FG is enabled)", config.presentMode());
 		}
 	}
 
@@ -345,17 +354,38 @@ public abstract class VulkanGpuSurfaceMixin {
 					target = "Lorg/lwjgl/vulkan/KHRSwapchain;vkQueuePresentKHR(Lorg/lwjgl/vulkan/VkQueue;Lorg/lwjgl/vulkan/VkPresentInfoKHR;)I"))
 	private int caustica$presentWithReflex(VkQueue queue, VkPresentInfoKHR presentInfo) {
 		boolean reflexActive = RtReflex.enabled() && this.swapchain == RtReflex.INSTANCE.appliedSwapchain();
-		if (!reflexActive) {
-			return KHRSwapchain.vkQueuePresentKHR(queue, presentInfo);
-		}
 		VkDevice vkDevice = this.device.vkDevice();
-		// Own counter (not currentSimFrameId()): Minecraft can present outside the normal tick loop (e.g.
-		// Minecraft.setScreenAndShow's synchronous redraw when opening a world), so presentID must advance on
-		// every actual vkQueuePresentKHR call, not just once per sleep()/runTick — otherwise a stale, already-
-		// used id gets resent and VUID-VkPresentIdKHR-presentIds-04999 fires.
-		long presentId = RtReflex.INSTANCE.advancePresentId();
-		RtReflex.INSTANCE.marker(vkDevice, this.swapchain, RtReflex.MARKER_RENDERSUBMIT_END, presentId);
-		RtReflex.INSTANCE.marker(vkDevice, this.swapchain, RtReflex.MARKER_PRESENT_START, presentId);
+		long presentId = 0L;
+		if (reflexActive) {
+			// Own counter (not currentSimFrameId()): Minecraft can present outside the normal tick loop (e.g.
+			// Minecraft.setScreenAndShow's synchronous redraw when opening a world), so presentID must advance on
+			// every actual vkQueuePresentKHR call, not just once per sleep()/runTick — otherwise a stale, already-
+			// used id gets resent and VUID-VkPresentIdKHR-presentIds-04999 fires.
+			presentId = RtReflex.INSTANCE.advancePresentId();
+			RtReflex.INSTANCE.marker(vkDevice, this.swapchain, RtReflex.MARKER_RENDERSUBMIT_END, presentId);
+			RtReflex.INSTANCE.marker(vkDevice, this.swapchain, RtReflex.MARKER_PRESENT_START, presentId);
+		}
+
+		// DLSS-FG frame pacing: hold the real present until the midpoint between two rendered frames. The
+		// generated present already happened at present() HEAD. This is the only place Minecraft's real
+		// present can be delayed without stalling the render thread, so the pacer owns both the actual
+		// vkQueuePresentKHR and the PRESENT_END marker. Fall back to an immediate present if the present
+		// carries a pNext chain or multiple swapchains/semaphores we do not copy.
+		if (presentInfo.pNext() == 0L && presentInfo.swapchainCount() == 1
+				&& presentInfo.waitSemaphoreCount() <= 1
+				&& RtFramePresenter.INSTANCE.shouldPaceRealPresent()) {
+			long waitSemaphore = presentInfo.waitSemaphoreCount() == 1
+					? presentInfo.pWaitSemaphores().get(0) : 0L;
+			if (RtFramePresenter.INSTANCE.deferRealPresent(queue, vkDevice,
+					presentInfo.pSwapchains().get(0), presentInfo.pImageIndices().get(0),
+					waitSemaphore, presentId)) {
+				return VK10.VK_SUCCESS;
+			}
+		}
+
+		if (!reflexActive) {
+			return RtFramePresenter.INSTANCE.presentNow(queue, presentInfo);
+		}
 		int result;
 		if (RtDeviceBringup.presentIdEnabled()) {
 			try (MemoryStack stack = MemoryStack.stackPush()) {
@@ -364,10 +394,10 @@ public abstract class VulkanGpuSurfaceMixin {
 						.swapchainCount(1)
 						.pPresentIds(stack.longs(presentId));
 				presentInfo.pNext(vkPresentId.address());
-				result = KHRSwapchain.vkQueuePresentKHR(queue, presentInfo);
+				result = RtFramePresenter.INSTANCE.presentNow(queue, presentInfo);
 			}
 		} else {
-			result = KHRSwapchain.vkQueuePresentKHR(queue, presentInfo);
+			result = RtFramePresenter.INSTANCE.presentNow(queue, presentInfo);
 		}
 		RtReflex.INSTANCE.marker(vkDevice, this.swapchain, RtReflex.MARKER_PRESENT_END, presentId);
 		return result;

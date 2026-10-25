@@ -32,6 +32,9 @@
 	"caustica.options.rt.waterWaves": "Animated Water",
 	"caustica.options.rt.waterWaves.tooltip": "Animate water-surface normals for moving wave highlights.",
 
+	"caustica.options.rt.cloudDensity": "Cloud Density",
+	"caustica.options.rt.cloudDensity.tooltip": "Multiplier on the volumetric cloud layer's density. Lower values make the same cloud shapes thinner and more translucent, so light penetrates deeper and the deck's depth becomes visible; higher values close the clouds into a denser, more opaque deck.",
+
 	"caustica.options.rt.motionBlur": "Motion Blur",
 	"caustica.options.rt.motionBlur.tooltip": "Blur the image along each pixel's real motion vectors over the shutter interval. Camera turns and moving objects streak the way a film camera's open shutter does; cost is one display-resolution pass.",
 
@@ -166,5 +169,13 @@
 	"caustica.options.rt.focusDistance": "Focus Distance",
 	"caustica.options.rt.focusDistance.tooltip": "How far from the camera the sharp plane sits, in metres. Everything at that distance stays sharp and everything nearer or farther blurs by an amount set by the aperture.",
 
-	"caustica.options.rt.autoValue": " (auto)"
+	"caustica.options.rt.autoValue": " (auto)",
+
+	"caustica.options.rt.frameGeneration": "DLSS Frame Generation",
+
+	"caustica.options.rt.frameGeneration.tooltip": "Generates one interpolated frame between rendered frames for 2x output. Requires a supported NVIDIA GPU and driver.",
+
+	"caustica.options.rt.volumetricClouds": "Volumetric Clouds",
+
+	"caustica.options.rt.volumetricClouds.tooltip": "Draws the volumetric cloud deck and its shadows. Turning this off removes the cloud layer, its temporal pass, and cloud shadows from direct sunlight."
 }
